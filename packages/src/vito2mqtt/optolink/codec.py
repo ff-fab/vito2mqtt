@@ -45,6 +45,7 @@ References:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from enum import IntEnum
 from typing import Any
@@ -494,6 +495,41 @@ _ALL_TYPES = frozenset(
     }
 )
 
+# Dispatch tables — one entry per type code
+# Decoders without language parameter: bytes → value
+_DECODE_SIMPLE: dict[str, Callable[[bytes], Any]] = {
+    "IS10": _decode_is10,
+    "IUNON": _decode_iunon,
+    "IU3600": _decode_iu3600,
+    "PR2": _decode_pr2,
+    "PR3": _decode_pr3,
+    "RT": _decode_rt,
+    "CT": _decode_ct,
+    "TI": _decode_ti,
+}
+
+# Decoders that accept a language parameter: (bytes, str) → value
+_DECODE_LANG: dict[str, Callable[[bytes, str], Any]] = {
+    "BA": _decode_ba,
+    "USV": _decode_usv,
+    "ES": _decode_es,
+}
+
+# Encoders: numeric (value, byte_length), language (value, language), plain (value,)
+_ENCODE_NUMERIC: dict[str, Callable[[Any, int], bytes]] = {
+    "IS10": _encode_is10,
+    "IUNON": _encode_iunon,
+    "IU3600": _encode_iu3600,
+}
+_ENCODE_LANG: dict[str, Callable[[Any, str], bytes]] = {
+    "BA": _encode_ba,
+    "USV": _encode_usv,
+}
+_ENCODE_PLAIN: dict[str, Callable[[Any], bytes]] = {
+    "CT": _encode_ct,
+}
+_ENCODE_UNSUPPORTED = frozenset({"PR2", "PR3", "RT", "ES", "TI"})
+
 
 def decode(
     type_code: str,
@@ -525,31 +561,9 @@ def decode(
     if type_code not in _ALL_TYPES:
         raise CodecError(f"Unknown type code: {type_code!r}")
 
-    match type_code:
-        case "IS10":
-            return _decode_is10(data)
-        case "IUNON":
-            return _decode_iunon(data)
-        case "IU3600":
-            return _decode_iu3600(data)
-        case "PR2":
-            return _decode_pr2(data)
-        case "PR3":
-            return _decode_pr3(data)
-        case "BA":
-            return _decode_ba(data, language)
-        case "USV":
-            return _decode_usv(data, language)
-        case "ES":
-            return _decode_es(data, language)
-        case "RT":
-            return _decode_rt(data)
-        case "CT":
-            return _decode_ct(data)
-        case "TI":
-            return _decode_ti(data)
-        case _:  # pragma: no cover
-            raise CodecError(f"Unhandled type code: {type_code!r}")
+    if type_code in _DECODE_LANG:
+        return _DECODE_LANG[type_code](data, language)
+    return _DECODE_SIMPLE[type_code](data)
 
 
 def encode(
@@ -577,20 +591,10 @@ def encode(
     if type_code not in _ALL_TYPES:
         raise CodecError(f"Unknown type code: {type_code!r}")
 
-    match type_code:
-        case "IS10":
-            return _encode_is10(value, byte_length)
-        case "IUNON":
-            return _encode_iunon(value, byte_length)
-        case "IU3600":
-            return _encode_iu3600(value, byte_length)
-        case "BA":
-            return _encode_ba(value, language)
-        case "USV":
-            return _encode_usv(value, language)
-        case "CT":
-            return _encode_ct(value)
-        case "PR2" | "PR3" | "RT" | "ES" | "TI":
-            raise CodecError(f"Encoding not supported for type {type_code!r}")
-        case _:  # pragma: no cover
-            raise CodecError(f"Unhandled type code: {type_code!r}")
+    if type_code in _ENCODE_UNSUPPORTED:
+        raise CodecError(f"Encoding not supported for type {type_code!r}")
+    if type_code in _ENCODE_NUMERIC:
+        return _ENCODE_NUMERIC[type_code](value, byte_length)
+    if type_code in _ENCODE_LANG:
+        return _ENCODE_LANG[type_code](value, language)
+    return _ENCODE_PLAIN[type_code](value)

@@ -140,6 +140,10 @@ disallow_untyped_defs = true
 module = "vito2mqtt._version"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["serial_asyncio", "serial_asyncio.*"]
+ignore_missing_imports = true
+
 [tool.pyright]
 pythonVersion = "3.14"
 venvPath = "."

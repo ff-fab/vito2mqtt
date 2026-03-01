@@ -564,3 +564,131 @@ class TestSerialPortProtocol:
         # or by checking the protocol directly
         for method_name in ("read", "write", "close"):
             assert hasattr(SerialPort, method_name)
+
+
+# ---------------------------------------------------------------------------
+# Response echo validation
+# ---------------------------------------------------------------------------
+
+
+class TestReadEchoValidation:
+    """Verify that read() validates response mode, address, and data_length.
+
+    The P300 session must check that the response frame echoes the
+    request parameters, catching stale or out-of-order responses.
+
+    Technique: Defensive Programming — echo validation.
+    """
+
+    async def test_mismatched_address_raises(self) -> None:
+        """Response with wrong address triggers DeviceError.
+
+        Technique: Error Guessing — stale response from previous request.
+        """
+        address = 0x0800
+        payload = b"\x42\x00"
+        wrong_address = 0x5525
+        response = build_response(address, payload, override_address=wrong_address)
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*address"):
+            await session.read(address, len(payload))
+
+    async def test_mismatched_mode_raises(self) -> None:
+        """Response with WRITE mode for a READ request triggers DeviceError.
+
+        Technique: Error Guessing — protocol confusion.
+        """
+        address = 0x0800
+        payload = b"\x42\x00"
+        response = build_response(address, payload, override_mode=P300Mode.WRITE)
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*mode"):
+            await session.read(address, len(payload))
+
+    async def test_mismatched_data_length_raises(self) -> None:
+        """Response with wrong data_length field triggers DeviceError.
+
+        Technique: Error Guessing — corrupted length field.
+        """
+        address = 0x0800
+        payload = b"\x42\x00"
+        response = build_response(address, payload, override_data_length=4)
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*data_length"):
+            await session.read(address, len(payload))
+
+
+class TestWriteEchoValidation:
+    """Verify that write() validates response mode, address, and data_length.
+
+    Technique: Defensive Programming — echo validation for writes.
+    """
+
+    async def test_mismatched_address_raises(self) -> None:
+        """Write response with wrong address triggers DeviceError.
+
+        Technique: Error Guessing — stale response.
+        """
+        address = 0x6300
+        payload = b"\x2d"
+        response = build_response(
+            address,
+            payload,
+            mode=P300Mode.WRITE,
+            override_address=0x0800,
+        )
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*address"):
+            await session.write(address, payload)
+
+    async def test_mismatched_mode_raises(self) -> None:
+        """Write response with READ mode triggers DeviceError.
+
+        Technique: Error Guessing — mode confusion.
+        """
+        address = 0x6300
+        payload = b"\x2d"
+        response = build_response(
+            address,
+            payload,
+            mode=P300Mode.WRITE,
+            override_mode=P300Mode.READ,
+        )
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*mode"):
+            await session.write(address, payload)
+
+    async def test_mismatched_data_length_raises(self) -> None:
+        """Write response with wrong data_length triggers DeviceError.
+
+        Technique: Error Guessing — corrupted response.
+        """
+        address = 0x6300
+        payload = b"\x2d"
+        response = build_response(
+            address,
+            payload,
+            mode=P300Mode.WRITE,
+            override_data_length=4,
+        )
+
+        fake = FakeSerial([ACK, response])
+        session = P300Session(fake)
+
+        with pytest.raises(DeviceError, match="echo mismatch.*data_length"):
+            await session.write(address, payload)

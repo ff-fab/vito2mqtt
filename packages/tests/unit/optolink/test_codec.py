@@ -765,3 +765,96 @@ class TestUnknownTypeCode:
         """
         with pytest.raises(CodecError, match="Unknown type code"):
             decode(excluded, b"\x00")
+
+
+# ---------------------------------------------------------------------------
+# BCD datetime error wrapping
+# ---------------------------------------------------------------------------
+
+
+class TestBCDDatetimeErrors:
+    """Invalid BCD bytes must raise CodecError, not raw ValueError.
+
+    The public decode() contract says only CodecError escapes.
+    Internal ValueError/OverflowError from BCD parsing or datetime
+    construction must be wrapped.
+
+    Technique: Contract correctness — exception wrapping.
+    """
+
+    def _make_es_data_raw(self, error_code: int, timestamp_bytes: bytes) -> bytes:
+        """Build ES data with a custom timestamp (may be invalid BCD)."""
+        return bytes([error_code]) + timestamp_bytes
+
+    def test_non_bcd_nibble_raises_codec_error(self) -> None:
+        """BCD byte 0x2A has non-decimal nibble → CodecError.
+
+        int("2A") raises ValueError; this must become CodecError.
+
+        Technique: Error Guessing — corrupted BCD data from hardware.
+        """
+        # 0x2A in the month position will produce int("2A") → ValueError
+        bad_timestamp = bytes([0x20, 0x26, 0x2A, 0x28, 0x06, 0x14, 0x30, 0x00])
+        data = self._make_es_data_raw(0x00, bad_timestamp)
+        with pytest.raises(CodecError, match="Invalid BCD datetime"):
+            decode("ES", data, language="en")
+
+    def test_invalid_date_raises_codec_error(self) -> None:
+        """BCD month 0x13 (13) is valid BCD but invalid date → CodecError.
+
+        datetime(2026, 13, 1) raises ValueError; must become CodecError.
+
+        Technique: Error Guessing — out-of-range BCD date field.
+        """
+        bad_timestamp = bytes([0x20, 0x26, 0x13, 0x01, 0x01, 0x00, 0x00, 0x00])
+        data = self._make_es_data_raw(0x00, bad_timestamp)
+        with pytest.raises(CodecError, match="Invalid BCD datetime"):
+            decode("ES", data, language="en")
+
+    def test_ti_invalid_bcd_raises_codec_error(self) -> None:
+        """TI type also wraps BCD errors as CodecError.
+
+        Technique: Equivalence Partitioning — same BCD path via TI.
+        """
+        bad_data = bytes([0x20, 0x26, 0x2F, 0x28, 0x06, 0x14, 0x30, 0x00])
+        with pytest.raises(CodecError, match="Invalid BCD datetime"):
+            decode("TI", bad_data)
+
+
+# ---------------------------------------------------------------------------
+# Encode error messages show labels not codes
+# ---------------------------------------------------------------------------
+
+
+class TestEncodeErrorMessages:
+    """Verify that codec error messages show valid label strings,
+    not internal integer byte codes.
+
+    Technique: Specification-based — error message usability.
+    """
+
+    def test_ba_error_shows_labels_not_codes(self) -> None:
+        """BA encode error lists valid labels like 'off', 'reduced', etc.
+
+        Technique: Error Guessing — user sees helpful error on typo.
+        """
+        with pytest.raises(CodecError, match="off") as exc_info:
+            encode("BA", "bogus_label", language="en")
+        msg = str(exc_info.value)
+        # Should contain label strings, not integer codes
+        assert "off" in msg
+        assert "reduced" in msg
+        # Should NOT contain raw integer codes
+        assert "[0," not in msg
+
+    def test_usv_error_shows_labels_not_codes(self) -> None:
+        """USV encode error lists valid labels like 'heating', 'middle', etc.
+
+        Technique: Error Guessing — user sees helpful error on typo.
+        """
+        with pytest.raises(CodecError, match="heating") as exc_info:
+            encode("USV", "bogus_label", language="en")
+        msg = str(exc_info.value)
+        assert "heating" in msg
+        assert "middle" in msg
+        assert "[0," not in msg

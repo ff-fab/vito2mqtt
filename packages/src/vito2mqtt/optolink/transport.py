@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import Final, Protocol, runtime_checkable
 
 from vito2mqtt.optolink import telegram
-from vito2mqtt.optolink.telegram import P300Type
+from vito2mqtt.optolink.telegram import P300Mode, P300Type
 
 # ---------------------------------------------------------------------------
 # P300 control codes
@@ -141,6 +141,7 @@ class P300Session:
             raise DeviceError("error response from device")
         if decoded.telegram_type != P300Type.RESPONSE:
             raise DeviceError(f"unexpected response type: {decoded.telegram_type!r}")
+        self._validate_echo(decoded, P300Mode.READ, address, length)
 
         await self._port.write(ACK)
         return decoded.payload
@@ -162,10 +163,40 @@ class P300Session:
             raise DeviceError("error response from device")
         if decoded.telegram_type != P300Type.RESPONSE:
             raise DeviceError(f"unexpected response type: {decoded.telegram_type!r}")
+        self._validate_echo(decoded, P300Mode.WRITE, address, len(payload))
 
         await self._port.write(ACK)
 
     # -- internal helpers ---------------------------------------------------
+
+    @staticmethod
+    def _validate_echo(
+        decoded: telegram.DecodedTelegram,
+        expected_mode: P300Mode,
+        expected_address: int,
+        expected_data_length: int,
+    ) -> None:
+        """Verify the response echoes the request's mode, address, and data_length.
+
+        Catches stale or out-of-order responses that are structurally valid
+        but don't correspond to the current request.
+
+        Raises:
+            DeviceError: If any echo field doesn't match.
+        """
+        mismatches: list[str] = []
+        if decoded.mode != expected_mode:
+            mismatches.append(f"mode={decoded.mode!r} (expected {expected_mode!r})")
+        if decoded.address != expected_address:
+            mismatches.append(
+                f"address=0x{decoded.address:04X} (expected 0x{expected_address:04X})"
+            )
+        if decoded.data_length != expected_data_length:
+            mismatches.append(
+                f"data_length={decoded.data_length} (expected {expected_data_length})"
+            )
+        if mismatches:
+            raise DeviceError(f"response echo mismatch: {', '.join(mismatches)}")
 
     async def _initialize(self) -> None:
         """Run the P300 initialization handshake.

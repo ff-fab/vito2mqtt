@@ -38,11 +38,12 @@ repos:
     hooks:
       - id: codespell
         name: Codespell (spell check)
-        args: ['--ignore-words-list', 'hass,betrieb,oder,modul,stellen,nicht,ist']
+        args: ['--ignore-words-list', 'hass']
         exclude: |
           (?x)^(
             old/.*|
-            .*\.lock
+            .*\.lock|
+            packages/src/vito2mqtt/optolink/codec\.py
           )$
 
   # Prettier: Format JavaScript, TypeScript, JSON, Markdown, YAML

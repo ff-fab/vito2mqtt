@@ -80,6 +80,9 @@ def build_response(
     *,
     error: bool = False,
     mode: P300Mode = P300Mode.READ,
+    override_address: int | None = None,
+    override_data_length: int | None = None,
+    override_mode: P300Mode | None = None,
 ) -> bytes:
     """Build a raw P300 response telegram for testing.
 
@@ -91,15 +94,25 @@ def build_response(
         payload: Response payload bytes.
         error: If ``True``, sets the telegram type to ``P300Type.ERROR``.
         mode: Telegram mode (defaults to READ).
+        override_address: If set, uses this address in the frame instead
+            of *address*. Useful for testing echo-validation mismatches.
+        override_data_length: If set, uses this data_length field instead
+            of ``len(payload)``. Useful for testing echo-validation mismatches.
+        override_mode: If set, uses this mode in the frame instead of
+            *mode*. Useful for testing echo-validation mismatches.
 
     Returns:
         Complete raw telegram bytes.
     """
     ttype = P300Type.ERROR if error else P300Type.RESPONSE
-    addr_hi = (address >> 8) & 0xFF
-    addr_lo = address & 0xFF
-    data_len = len(payload)
-    body_content = bytes([ttype, mode, addr_hi, addr_lo, data_len]) + payload
+    frame_mode = override_mode if override_mode is not None else mode
+    frame_addr = override_address if override_address is not None else address
+    addr_hi = (frame_addr >> 8) & 0xFF
+    addr_lo = frame_addr & 0xFF
+    data_len = (
+        override_data_length if override_data_length is not None else len(payload)
+    )
+    body_content = bytes([ttype, frame_mode, addr_hi, addr_lo, data_len]) + payload
     frame_len = len(body_content)
     # body = everything between start byte and checksum
     body = bytes([frame_len]) + body_content

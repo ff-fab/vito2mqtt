@@ -417,3 +417,97 @@ class TestEnumValues:
         assert P300Mode.READ == 0x01
         assert P300Mode.WRITE == 0x02
         assert P300Mode.FUNCTION_CALL == 0x07
+
+
+# ---------------------------------------------------------------------------
+# Length field validation
+# ---------------------------------------------------------------------------
+
+
+class TestLengthValidation:
+    """Verify that decode_telegram validates the length field
+    against the actual telegram size.
+
+    Technique: Defense in depth — length field provides an independent
+    structural check beyond the checksum.
+    """
+
+    def test_truncated_frame_with_valid_checksum_raises(self) -> None:
+        """A telegram with a length field implying more bytes than present.
+
+        We build a valid 10-byte telegram (body[0]=7) then remove one
+        byte from the payload, yielding 9 bytes. The length field says
+        10 but the frame is only 9 → length mismatch.
+
+        Technique: Error Guessing — truncated serial read.
+        """
+        # Valid write response: 0x41 [07 01 02 55 25 02 EF 00] csum = 10 bytes
+        body = bytes([0x07, 0x01, 0x02, 0x55, 0x25, 0x02, 0xEF, 0x00])
+        raw_valid = bytes([0x41]) + body + bytes([checksum(body)])
+        assert len(raw_valid) == 10  # sanity check
+
+        # Truncate: remove last payload byte but recompute checksum
+        truncated_body = bytes([0x07, 0x01, 0x02, 0x55, 0x25, 0x02, 0xEF])
+        csum = checksum(truncated_body)
+        raw_truncated = bytes([0x41]) + truncated_body + bytes([csum])
+        # body[0] = 7 → expected_total = 7+3 = 10, actual = 9
+        with pytest.raises(TelegramError, match="[Ll]ength mismatch"):
+            decode_telegram(raw_truncated)
+
+    def test_padded_frame_with_extra_bytes_raises(self) -> None:
+        """A telegram with extra trailing bytes beyond what length says.
+
+        Technique: Error Guessing — serial buffer contamination.
+        """
+        # Build valid request then append an extra byte (re-computing checksum)
+        body = bytes([0x05, 0x00, 0x01, 0x55, 0x25, 0x02, 0xFF])
+        raw = bytes([0x41]) + body + bytes([checksum(body)])
+        # body[0] = 5 → expected total = 8, actual = 10
+        with pytest.raises(TelegramError, match="[Ll]ength mismatch"):
+            decode_telegram(raw)
+
+    def test_valid_frame_passes_length_check(self) -> None:
+        """A correctly formed telegram passes the length validation.
+
+        Technique: Specification-based — positive verification.
+        """
+        raw = encode_read_request(address=0x5525, data_length=2)
+        # Should not raise
+        result = decode_telegram(raw)
+        assert result.address == 0x5525
+
+
+# ---------------------------------------------------------------------------
+# Unknown enum field values
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownEnumValues:
+    """Verify that unknown P300Type/P300Mode values raise TelegramError.
+
+    The enum constructors raise ValueError for invalid values, but the
+    public API contract says only TelegramError escapes.
+
+    Technique: Contract correctness — wrap internal exceptions.
+    """
+
+    def test_unknown_telegram_type_raises_telegram_error(self) -> None:
+        """Unknown type byte (e.g. 0xFF) raises TelegramError, not ValueError.
+
+        Technique: Error Guessing — corrupted type field.
+        """
+        # Build a frame with type=0xFF (invalid) but valid checksum
+        body = bytes([0x05, 0xFF, 0x01, 0x55, 0x25, 0x02])
+        raw = bytes([0x41]) + body + bytes([checksum(body)])
+        with pytest.raises(TelegramError, match="Unknown telegram field"):
+            decode_telegram(raw)
+
+    def test_unknown_mode_raises_telegram_error(self) -> None:
+        """Unknown mode byte (e.g. 0xAA) raises TelegramError, not ValueError.
+
+        Technique: Error Guessing — corrupted mode field.
+        """
+        body = bytes([0x05, 0x01, 0xAA, 0x55, 0x25, 0x02])
+        raw = bytes([0x41]) + body + bytes([checksum(body)])
+        with pytest.raises(TelegramError, match="Unknown telegram field"):
+            decode_telegram(raw)

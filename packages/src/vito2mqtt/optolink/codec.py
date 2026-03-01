@@ -151,14 +151,14 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         0xB7: "Interner Fehler (Kesselkodierstecker)",
         0xB8: "Unterbrechung Abgastemperatursensor",
         0xB9: "Interner Fehler (Dateneingabe wiederholen)",
-        0xBA: ("Kommunikationsfehler Erweiterungssatz für Mischerkreis M2"),
-        0xBC: ("Kommunikationsfehler Fernbedienung Vitorol, Heizkreis M1"),
-        0xBD: ("Kommunikationsfehler Fernbedienung Vitorol, Heizkreis M2"),
+        0xBA: "Kommunikationsfehler Erweiterungssatz für Mischerkreis M2",
+        0xBC: "Kommunikationsfehler Fernbedienung Vitorol, Heizkreis M1",
+        0xBD: "Kommunikationsfehler Fernbedienung Vitorol, Heizkreis M2",
         0xBE: "Falsche Codierung Fernbedienung Vitorol",
-        0xC1: ("Externe Sicherheitseinrichtung (Kessel kühlt aus)"),
+        0xC1: "Externe Sicherheitseinrichtung (Kessel kühlt aus)",
         0xC2: "Kommunikationsfehler Solarregelung",
-        0xC5: ("Kommunikationsfehler drehzahlgeregelte Heizkreispumpe, Heizkreis M1"),
-        0xC6: ("Kommunikationsfehler drehzahlgeregelte Heizkreispumpe, Heizkreis M2"),
+        0xC5: "Kommunikationsfehler drehzahlgeregelte Heizkreispumpe, Heizkreis M1",
+        0xC6: "Kommunikationsfehler drehzahlgeregelte Heizkreispumpe, Heizkreis M2",
         0xC7: "Falsche Codierung der Heizkreispumpe",
         0xC9: "Störmeldeeingang am Schaltmodul-V aktiv",
         0xCD: "Kommunikationsfehler Vitocom 100 (KM-BUS)",
@@ -171,23 +171,23 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         ),
         0xDA: "Kurzschluss Raumtemperatursensor, Heizkreis M1",
         0xDB: "Kurzschluss Raumtemperatursensor, Heizkreis M2",
-        0xDD: ("Unterbrechung Raumtemperatursensor, Heizkreis M1"),
-        0xDE: ("Unterbrechung Raumtemperatursensor, Heizkreis M2"),
+        0xDD: "Unterbrechung Raumtemperatursensor, Heizkreis M1",
+        0xDE: "Unterbrechung Raumtemperatursensor, Heizkreis M2",
         0xE4: "Fehler Versorgungsspannung",
         0xE5: "Interner Fehler (Ionisationselektrode)",
         0xE6: "Abgas-/Zuluftsystem verstopft",
         0xF0: "Interner Fehler (Regelung tauschen)",
         0xF1: "Abgastemperaturbegrenzer ausgelöst",
         0xF2: "Temperaturbegrenzer ausgelöst",
-        0xF3: ("Flammensignal beim Brennerstart bereits vorhanden"),
+        0xF3: "Flammensignal beim Brennerstart bereits vorhanden",
         0xF4: "Flammensignal nicht vorhanden",
         0xF7: "Differenzdrucksensor defekt",
         0xF8: "Brennstoffventil schließt zu spät",
-        0xF9: ("Gebläsedrehzahl beim Brennerstart zu niedrig"),
+        0xF9: "Gebläsedrehzahl beim Brennerstart zu niedrig",
         0xFA: "Gebläsestillstand nicht erreicht",
         0xFD: "Fehler Gasfeuerungsautomat",
-        0xFE: ("Starkes Störfeld (EMV) in der Nähe oder Elektronik defekt"),
-        0xFF: ("Starkes Störfeld (EMV) in der Nähe oder interner Fehler"),
+        0xFE: "Starkes Störfeld (EMV) in der Nähe oder Elektronik defekt",
+        0xFF: "Starkes Störfeld (EMV) in der Nähe oder interner Fehler",
     },
     "en": {
         0x00: "normal operation (no error)",
@@ -210,7 +210,7 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         0x9A: "solar: open circuit collector temp sensor",
         0x9B: "solar: open circuit sensor S3",
         0x9C: "solar: open circuit storage temp sensor",
-        0x9E: ("solar: insufficient flow rate or thermal cutout triggered"),
+        0x9E: "solar: insufficient flow rate or thermal cutout triggered",
         0x9F: "solar: error in solar module (see controller)",
         0xA7: "control panel defective",
         0xB0: "short circuit exhaust temperature sensor",
@@ -222,13 +222,13 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         0xB8: "open circuit exhaust temperature sensor",
         0xB9: "internal error (repeat data entry)",
         0xBA: "communication error mixer circuit M2 ext",
-        0xBC: ("communication error remote control Vitorol, heating circuit M1"),
-        0xBD: ("communication error remote control Vitorol, heating circuit M2"),
+        0xBC: "communication error remote control Vitorol, heating circuit M1",
+        0xBD: "communication error remote control Vitorol, heating circuit M2",
         0xBE: "incorrect coding remote control Vitorol",
-        0xC1: ("external safety device (boiler cooling down)"),
+        0xC1: "external safety device (boiler cooling down)",
         0xC2: "communication error solar controller",
-        0xC5: ("communication error variable-speed pump, heating circuit M1"),
-        0xC6: ("communication error variable-speed pump, heating circuit M2"),
+        0xC5: "communication error variable-speed pump, heating circuit M1",
+        0xC6: "communication error variable-speed pump, heating circuit M2",
         0xC7: "incorrect coding heating circuit pump",
         0xC9: "fault input at switching module V active",
         0xCD: "communication error Vitocom 100 (KM-BUS)",
@@ -238,10 +238,10 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         0xD4: (
             "safety temperature limiter triggered or fault module not seated correctly"
         ),
-        0xDA: ("short circuit room temperature sensor, heating circuit M1"),
-        0xDB: ("short circuit room temperature sensor, heating circuit M2"),
-        0xDD: ("open circuit room temperature sensor, heating circuit M1"),
-        0xDE: ("open circuit room temperature sensor, heating circuit M2"),
+        0xDA: "short circuit room temperature sensor, heating circuit M1",
+        0xDB: "short circuit room temperature sensor, heating circuit M2",
+        0xDD: "open circuit room temperature sensor, heating circuit M1",
+        0xDE: "open circuit room temperature sensor, heating circuit M2",
         0xE4: "supply voltage error",
         0xE5: "internal error (ionisation electrode)",
         0xE6: "exhaust/intake system blocked",
@@ -255,8 +255,8 @@ _ES_LABELS: dict[str, dict[int, str]] = {
         0xF9: "fan speed too low at burner start",
         0xFA: "fan standstill not reached",
         0xFD: "gas burner control error",
-        0xFE: ("strong interference field (EMC) or electronics defective"),
-        0xFF: ("strong interference field (EMC) or internal error"),
+        0xFE: "strong interference field (EMC) or electronics defective",
+        0xFF: "strong interference field (EMC) or internal error",
     },
 }
 
@@ -400,15 +400,22 @@ def _decode_bcd_datetime(data: bytes) -> datetime:
                   hour, minute, second]
 
     Each byte is BCD-encoded: 0x20 means decimal 20, 0x06 means 6.
+
+    Raises:
+        CodecError: If any byte contains non-BCD nibbles or the
+            resulting date/time is invalid.
     """
-    year = int(f"{data[0]:02X}{data[1]:02X}")
-    month = int(f"{data[2]:02X}")
-    day = int(f"{data[3]:02X}")
-    # data[4] is weekday — not used in datetime
-    hour = int(f"{data[5]:02X}")
-    minute = int(f"{data[6]:02X}")
-    second = int(f"{data[7]:02X}")
-    return datetime(year, month, day, hour, minute, second)
+    try:
+        year = int(f"{data[0]:02X}{data[1]:02X}")
+        month = int(f"{data[2]:02X}")
+        day = int(f"{data[3]:02X}")
+        # data[4] is weekday — not used in datetime
+        hour = int(f"{data[5]:02X}")
+        minute = int(f"{data[6]:02X}")
+        second = int(f"{data[7]:02X}")
+        return datetime(year, month, day, hour, minute, second)
+    except (ValueError, OverflowError) as exc:
+        raise CodecError(f"Invalid BCD datetime: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +450,7 @@ def _encode_ba(value: str, language: str) -> bytes:
     for lang_reverse in _BA_REVERSE.values():
         if value in lang_reverse:
             return lang_reverse[value].to_bytes(1, "little")
-    valid = list(reverse.values())
+    valid = list(reverse.keys())
     raise CodecError(f"Unknown BA label: {value!r}. Valid ({language}): {valid}")
 
 
@@ -455,7 +462,7 @@ def _encode_usv(value: str, language: str) -> bytes:
     for lang_reverse in _USV_REVERSE.values():
         if value in lang_reverse:
             return lang_reverse[value].to_bytes(1, "little")
-    valid = list(reverse.values())
+    valid = list(reverse.keys())
     raise CodecError(f"Unknown USV label: {value!r}. Valid ({language}): {valid}")
 
 

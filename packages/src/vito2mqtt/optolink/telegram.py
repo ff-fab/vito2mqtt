@@ -211,10 +211,20 @@ def decode_telegram(raw: bytes) -> DecodedTelegram:
             f"expected 0x{expected_csum:02X}"
         )
 
+    # Validate length field matches actual frame size.
+    # Expected total: start(1) + len_byte(1) + body[0] content + checksum(1)
+    expected_total = body[0] + 3
+    if len(raw) != expected_total:
+        raise TelegramError(
+            f"Length mismatch: header says {expected_total} bytes, got {len(raw)}"
+        )
+
     # Parse fields from body
-    # body[0] = length (already validated by checksum)
-    telegram_type = P300Type(body[1])
-    mode = P300Mode(body[2])
+    try:
+        telegram_type = P300Type(body[1])
+        mode = P300Mode(body[2])
+    except ValueError as exc:
+        raise TelegramError(f"Unknown telegram field value: {exc}") from exc
     addr_hi = body[3]
     addr_lo = body[4]
     address = (addr_hi << 8) | addr_lo

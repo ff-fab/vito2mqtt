@@ -89,14 +89,29 @@ def mock_session() -> MockP300Session:
 def make_open_session_patch(session: MockP300Session) -> Any:
     """Create an ``_open_session`` replacement that yields *session*.
 
+    Replicates the real ``_open_session``'s error-translation contract:
+    ``DeviceError`` → ``OptolinkConnectionError`` and
+    ``TimeoutError`` → ``OptolinkTimeoutError``, so tests exercising
+    error-mapping through the adapter's public API remain faithful.
+
     Returns an async context manager factory suitable for use with
     ``monkeypatch.setattr(adapter, '_open_session', ...)``.
     """
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
+    from vito2mqtt.errors import OptolinkConnectionError, OptolinkTimeoutError
+    from vito2mqtt.optolink.transport import DeviceError
+
     @asynccontextmanager
     async def _fake_open_session() -> AsyncIterator[MockP300Session]:
-        yield session
+        try:
+            yield session
+        except DeviceError as exc:
+            msg = f"Device communication error: {exc}"
+            raise OptolinkConnectionError(msg) from exc
+        except TimeoutError as exc:
+            msg = f"Timeout communicating with device: {exc}"
+            raise OptolinkTimeoutError(msg) from exc
 
     return _fake_open_session

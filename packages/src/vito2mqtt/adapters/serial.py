@@ -137,15 +137,8 @@ class OptolinkAdapter:
             msg = f"Signal {name!r} is write-only"
             raise InvalidSignalError(msg)
 
-        try:
-            async with self._lock, self._open_session() as session:
-                raw = await session.read(cmd.address, cmd.length)
-        except DeviceError as exc:
-            msg = f"Device communication error: {exc}"
-            raise OptolinkConnectionError(msg) from exc
-        except TimeoutError as exc:
-            msg = f"Timeout communicating with device: {exc}"
-            raise OptolinkTimeoutError(msg) from exc
+        async with self._lock, self._open_session() as session:
+            raw = await session.read(cmd.address, cmd.length)
 
         return codec.decode(cmd.type_code, raw, language=self._language)
 
@@ -174,15 +167,8 @@ class OptolinkAdapter:
             byte_length=cmd.length,
         )
 
-        try:
-            async with self._lock, self._open_session() as session:
-                await session.write(cmd.address, encoded)
-        except DeviceError as exc:
-            msg = f"Device communication error: {exc}"
-            raise OptolinkConnectionError(msg) from exc
-        except TimeoutError as exc:
-            msg = f"Timeout communicating with device: {exc}"
-            raise OptolinkTimeoutError(msg) from exc
+        async with self._lock, self._open_session() as session:
+            await session.write(cmd.address, encoded)
 
     async def read_signals(self, names: Sequence[str]) -> dict[str, Any]:
         """Batch-read multiple signals.

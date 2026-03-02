@@ -16,10 +16,12 @@
 """Real Optolink adapter — connects to the boiler via serial P300 protocol.
 
 :class:`OptolinkAdapter` implements :class:`~vito2mqtt.ports.OptolinkPort`
-using the optolink sub-package for serial communication.  Each signal
+using the optolink sub-package for serial communication.  Each single-signal
 read/write opens a fresh serial connection, performs the P300 handshake,
 executes the command, and closes — a *connect-per-cycle* strategy that
-keeps the serial port available between polling intervals.
+keeps the serial port available between polling intervals.  Batch reads
+via :meth:`~OptolinkAdapter.read_signals` reuse a single session for the
+entire batch.
 
 An :class:`asyncio.Lock` serializes concurrent access so only one
 coroutine talks to the hardware at a time.
@@ -172,19 +174,43 @@ class OptolinkAdapter:
             await session.write(cmd.address, encoded)
 
     async def read_signals(self, names: Sequence[str]) -> dict[str, Any]:
-        """Batch-read multiple signals.
+        """Batch-read multiple signals in a single session.
 
-        Iterates over *names* and calls :meth:`read_signal` for each.
+        Validates all signal names upfront, then opens one serial session
+        for the entire batch — reducing connection overhead from *N*
+        sessions to one.
 
         Args:
             names: Sequence of signal identifiers.
 
         Returns:
             Mapping of signal name → decoded value.
+
+        Raises:
+            InvalidSignalError: If any name is unknown or write-only.
+            OptolinkConnectionError: On serial or device errors.
+            OptolinkTimeoutError: If the device does not respond in time.
         """
-        results: dict[str, Any] = {}
+        if not names:
+            return {}
+
+        # Validate all signals before touching hardware
+        commands = []
         for name in names:
-            results[name] = await self.read_signal(name)
+            cmd = lookup_command(name)
+            if cmd.access_mode == AccessMode.WRITE:
+                msg = f"Signal {name!r} is write-only"
+                raise InvalidSignalError(msg)
+            commands.append((name, cmd))
+
+        results: dict[str, Any] = {}
+        async with self._lock, self._open_session() as session:
+            for name, cmd in commands:
+                raw = await session.read(cmd.address, cmd.length)
+                results[name] = codec.decode(
+                    cmd.type_code, raw, language=self._language
+                )
+
         return results
 
     # -- private helpers ----------------------------------------------------

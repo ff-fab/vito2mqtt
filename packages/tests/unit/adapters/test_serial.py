@@ -106,6 +106,19 @@ class TestSignalValidation:
         with pytest.raises(CommandNotWritableError, match="read-only"):
             await adapter.write_signal("outdoor_temperature", 20.0)
 
+    async def test_read_signal_write_only_raises_invalid_signal(
+        self, vito2mqtt_settings: Vito2MqttSettings
+    ) -> None:
+        """Reading a WRITE-only signal raises InvalidSignalError.
+
+        ``hot_water_setpoint`` is AccessMode.WRITE — reading must fail.
+
+        Technique: Error Guessing — write-only guard on read path.
+        """
+        adapter = OptolinkAdapter(vito2mqtt_settings)
+        with pytest.raises(InvalidSignalError, match="write-only"):
+            await adapter.read_signal("hot_water_setpoint")
+
 
 # ---------------------------------------------------------------------------
 # Read signal integration (mocked session)
@@ -327,8 +340,6 @@ class TestLockSerialization:
         adapter._open_session = make_open_session_patch(mock_session)  # type: ignore[assignment]
 
         call_order: list[int] = []
-
-        original_read = mock_session.read
 
         async def _slow_read(address: int, length: int) -> bytes:
             call_order.append(1)

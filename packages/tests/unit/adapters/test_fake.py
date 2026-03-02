@@ -92,10 +92,10 @@ class TestDefaultResponses:
         assert result == 50.0
 
     async def test_default_ba_returns_string_en(self) -> None:
-        """BA signals (e.g. operating_mode_m1) default to 'standby' in EN."""
+        """BA signals (e.g. operating_mode_m1) default to 'shutdown' in EN."""
         adapter = FakeOptolinkAdapter()
         result = await adapter.read_signal("operating_mode_m1")
-        assert result == "standby"
+        assert result == "shutdown"
 
     async def test_default_usv_returns_string_en(self) -> None:
         """USV signals (e.g. switch_valve_status) default to 'undefined' in EN."""
@@ -293,10 +293,10 @@ class TestLanguageSupport:
         assert result[1] == datetime(2026, 1, 1)
 
     async def test_ba_default_en(self, vito2mqtt_settings: Vito2MqttSettings) -> None:
-        """BA defaults to 'standby' in English."""
+        """BA defaults to 'shutdown' in English."""
         adapter = FakeOptolinkAdapter(settings=vito2mqtt_settings)
         result = await adapter.read_signal("operating_mode_m1")
-        assert result == "standby"
+        assert result == "shutdown"
 
 
 # ---------------------------------------------------------------------------

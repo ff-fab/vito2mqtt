@@ -71,7 +71,7 @@ _DEFAULTS_SIMPLE: dict[str, Any] = {
 }
 
 _DEFAULTS_LANG: dict[str, dict[str, Any]] = {
-    "BA": {"en": "standby", "de": "Abschaltbetrieb"},
+    "BA": {"en": "shutdown", "de": "Abschaltbetrieb"},
     "USV": {"en": "undefined", "de": "undefiniert"},
 }
 

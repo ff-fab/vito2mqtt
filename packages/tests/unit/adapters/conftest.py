@@ -37,8 +37,10 @@ from vito2mqtt.config import Vito2MqttSettings
 class MockP300Session:
     """Fake P300 session that records calls and returns programmable responses.
 
-    Use ``read_response`` to configure what :meth:`read` returns, and
-    inspect ``write`` calls via the :class:`AsyncMock`.
+    Configure :attr:`read` (an :class:`AsyncMock`, e.g. via
+    ``read.return_value`` or ``read.side_effect``) to control what
+    :meth:`read` returns, and inspect ``write`` calls via the
+    :class:`AsyncMock`.
     """
 
     def __init__(self) -> None:

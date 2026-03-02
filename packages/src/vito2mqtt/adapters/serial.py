@@ -36,6 +36,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
+from vito2mqtt.adapters import lookup_command
 from vito2mqtt.config import Vito2MqttSettings
 from vito2mqtt.errors import (
     CommandNotWritableError,
@@ -44,7 +45,7 @@ from vito2mqtt.errors import (
     OptolinkTimeoutError,
 )
 from vito2mqtt.optolink import codec
-from vito2mqtt.optolink.commands import COMMANDS, AccessMode
+from vito2mqtt.optolink.commands import AccessMode
 from vito2mqtt.optolink.transport import DeviceError, P300Session
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ class OptolinkAdapter:
             OptolinkConnectionError: On serial or device errors.
             OptolinkTimeoutError: If the device does not respond in time.
         """
-        cmd = self._lookup(name)
+        cmd = lookup_command(name)
         if cmd.access_mode == AccessMode.WRITE:
             msg = f"Signal {name!r} is write-only"
             raise InvalidSignalError(msg)
@@ -155,7 +156,7 @@ class OptolinkAdapter:
             OptolinkConnectionError: On serial or device errors.
             OptolinkTimeoutError: If the device does not respond in time.
         """
-        cmd = self._lookup(name)
+        cmd = lookup_command(name)
         if cmd.access_mode == AccessMode.READ:
             msg = f"Signal {name!r} is read-only"
             raise CommandNotWritableError(msg)
@@ -187,19 +188,6 @@ class OptolinkAdapter:
         return results
 
     # -- private helpers ----------------------------------------------------
-
-    @staticmethod
-    def _lookup(name: str) -> Any:
-        """Look up a command by signal name.
-
-        Raises:
-            InvalidSignalError: If *name* is not in the registry.
-        """
-        cmd = COMMANDS.get(name)
-        if cmd is None:
-            msg = f"Unknown signal: {name!r}"
-            raise InvalidSignalError(msg)
-        return cmd
 
     @asynccontextmanager
     async def _open_session(self) -> AsyncIterator[P300Session]:

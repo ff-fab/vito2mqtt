@@ -137,10 +137,14 @@ else
 fi
 
 # Start Dolt server via bd (manages port, PID, and lifecycle automatically)
-if command -v dolt >/dev/null 2>&1 && [ -d ".beads/dolt" ]; then
+if command -v bd >/dev/null 2>&1 && command -v dolt >/dev/null 2>&1 && [ -d ".beads/dolt" ]; then
     if ! bd dolt test --quiet 2>/dev/null; then
         echo "🔮 Starting Dolt server..."
-        bd dolt start || echo "⚠️  Dolt server failed to start (check bd dolt logs)"
+        if bd dolt start; then
+            echo "✅ Dolt server started"
+        else
+            echo "⚠️  Dolt server failed to start (check bd dolt logs)"
+        fi
     fi
 fi
 

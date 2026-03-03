@@ -30,7 +30,6 @@ late-binding closure pitfall.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import cast
 
 from cosalette import App, OnChange
 
@@ -119,7 +118,13 @@ def register_telemetry(app: App) -> None:
         app: The cosalette application instance.  Must have been
             constructed with ``settings_class=Vito2MqttSettings``.
     """
-    settings = cast(Vito2MqttSettings, app.settings)
+    settings = app.settings
+    if not isinstance(settings, Vito2MqttSettings):
+        msg = (
+            f"Expected Vito2MqttSettings, got {type(settings).__name__}. "
+            "Ensure App was constructed with settings_class=Vito2MqttSettings."
+        )
+        raise TypeError(msg)
 
     for group_name in SIGNAL_GROUPS:
         app.add_telemetry(

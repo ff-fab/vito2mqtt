@@ -90,7 +90,11 @@ def _parse_payload(raw: str, group: str) -> tuple[dict[str, Any], bool]:
         raise InvalidSignalError(msg)
 
     # Extract meta-key before validation — __force is not a signal name
-    force = bool(data.pop("__force", False))
+    raw_force = data.pop("__force", False)
+    if not isinstance(raw_force, bool):
+        msg = f"'__force' must be a JSON boolean, got {type(raw_force).__name__}"
+        raise InvalidSignalError(msg)
+    force = raw_force
 
     allowed = set(COMMAND_GROUPS[group])
     unknown = set(data.keys()) - allowed

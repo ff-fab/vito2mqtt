@@ -431,6 +431,28 @@ class TestParsePayload:
         data, force = _parse_payload(raw, "hot_water")
         assert force is True
 
+    def test_force_string_false_rejected(self) -> None:
+        """String "false" must be rejected — only JSON booleans allowed.
+
+        MQTT/Home Assistant templates often emit ``"false"`` as a string.
+        ``bool("false")`` is truthy in Python, which would silently
+        defeat the optimisation.  Strict typing catches this.
+
+        Technique: Error Guessing — truthy string coercion trap.
+        """
+        raw = json.dumps({"hot_water_setpoint": 55, "__force": "false"})
+        with pytest.raises(InvalidSignalError, match="__force.*must be a JSON boolean"):
+            _parse_payload(raw, "hot_water")
+
+    def test_force_integer_rejected(self) -> None:
+        """Integer 1 must be rejected — only JSON booleans allowed.
+
+        Technique: Error Guessing — int/bool confusion (bool subclasses int).
+        """
+        raw = json.dumps({"hot_water_setpoint": 55, "__force": 1})
+        with pytest.raises(InvalidSignalError, match="__force.*must be a JSON boolean"):
+            _parse_payload(raw, "hot_water")
+
 
 # ---------------------------------------------------------------------------
 # Read-Before-Write — handler behaviour tests
@@ -471,7 +493,7 @@ class TestReadBeforeWrite:
         assert fake.writes["hot_water_setpoint"] == 55
 
     async def test_force_bypasses_comparison(self) -> None:
-        """__force=true must skip the read and write unconditionally.
+        """__force=true must bypass read-before-write and write unconditionally.
 
         Technique: Specification-based — force meta-key bypass.
         """

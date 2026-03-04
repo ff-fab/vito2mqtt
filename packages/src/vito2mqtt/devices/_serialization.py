@@ -13,18 +13,25 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Value serialization helpers for MQTT publishing.
+"""Bidirectional value conversion between codec types and MQTT payloads.
 
-Converts codec return values that aren't directly JSON-serializable
-into JSON-safe types.  Each type code maps to a converter function;
-passthrough types return the value unchanged.
-
-Return type mapping by type code:
+Serialization (codec → MQTT)
+----------------------------
+:func:`serialize_value` converts codec return values that aren't
+directly JSON-serializable into JSON-safe types.
 
     IS10, IUNON, IU3600, PR2, PR3, BA, USV, CT — passthrough
     RT  — ReturnStatus.name.lower()  →  "on" | "off" | "error" | "unknown"
     ES  — [label, datetime]          →  {"error": label, "timestamp": iso}
     TI  — datetime                   →  iso string
+
+Deserialization (MQTT → codec)
+------------------------------
+:func:`deserialize_value` converts incoming JSON values to the types
+expected by ``OptolinkPort.write_signal()``.
+
+    IS10, IUNON, IU3600, PR2, PR3, BA, USV, CT, RT, ES — passthrough
+    TI  — iso string  →  datetime
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from typing import Any, cast
 
 from vito2mqtt.optolink.codec import ReturnStatus
 
-__all__ = ["serialize_value"]
+__all__ = ["serialize_value", "deserialize_value"]
 
 # ---------------------------------------------------------------------------
 # Converter helpers
@@ -104,3 +111,58 @@ def serialize_value(value: Any, type_code: str) -> Any:
     """
     converter = _CONVERTERS.get(type_code, _passthrough)  # defensive fallback
     return converter(value)
+
+
+# ---------------------------------------------------------------------------
+# Deserializer helpers
+# ---------------------------------------------------------------------------
+
+
+def _deserialize_system_time(value: Any) -> Any:
+    """Convert an ISO 8601 string to a datetime object."""
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    # Already a datetime (defensive)
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Deserializer dispatch table: type_code → deserializer
+# ---------------------------------------------------------------------------
+
+_DESERIALIZERS: dict[str, Callable[[Any], Any]] = {
+    "IS10": _passthrough,
+    "IUNON": _passthrough,
+    "IU3600": _passthrough,
+    "PR2": _passthrough,
+    "PR3": _passthrough,
+    "BA": _passthrough,
+    "USV": _passthrough,
+    "CT": _passthrough,
+    "RT": _passthrough,  # Commands don't write RT signals, but defensive
+    "ES": _passthrough,  # Commands don't write ES signals, but defensive
+    "TI": _deserialize_system_time,
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API — deserialization
+# ---------------------------------------------------------------------------
+
+
+def deserialize_value(value: Any, type_code: str) -> Any:
+    """Convert a JSON-parsed value to the type expected by the codec.
+
+    This is the inverse of :func:`serialize_value`.  Most types pass
+    through unchanged; ``TI`` converts an ISO 8601 string to
+    :class:`~datetime.datetime`.
+
+    Args:
+        value: The JSON-decoded value from the MQTT payload.
+        type_code: The command's type_code (e.g., "TI", "IUNON").
+
+    Returns:
+        A value suitable for ``OptolinkPort.write_signal()``.
+    """
+    deserializer = _DESERIALIZERS.get(type_code, _passthrough)
+    return deserializer(value)

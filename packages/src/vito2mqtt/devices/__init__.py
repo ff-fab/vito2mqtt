@@ -125,7 +125,6 @@ COMMAND_GROUPS: dict[str, tuple[str, ...]] = {
         "timer_m2_sunday",
     ),
     "system": (
-        "system_time",
         "timer_cp_monday",
         "timer_cp_tuesday",
         "timer_cp_wednesday",

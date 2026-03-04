@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from vito2mqtt.devices import COMMAND_GROUPS, SIGNAL_GROUPS
+from vito2mqtt.optolink.codec import _ENCODE_UNSUPPORTED
 from vito2mqtt.optolink.commands import COMMANDS, AccessMode
 
 # ---------------------------------------------------------------------------
@@ -111,11 +112,10 @@ class TestCommandGroupsIntegrity:
             )
 
     def test_no_overlap_with_telemetry_signal_names(self) -> None:
-        """COMMAND_GROUPS signals should not overlap with SIGNAL_GROUPS signals.
+        """Overlapping signals between command and telemetry groups must be READ_WRITE.
 
-        Currently all writable signals are write-only (not READ_WRITE),
-        so they don't appear in telemetry groups.  This test guards that
-        invariant.
+        WRITE-only signals must not appear in telemetry groups.
+        READ_WRITE signals may legitimately appear in both registries.
 
         Technique: Cross-reference — command vs. telemetry separation.
         """
@@ -126,12 +126,18 @@ class TestCommandGroupsIntegrity:
             signal for signals in COMMAND_GROUPS.values() for signal in signals
         }
         overlap = telemetry_signals & command_signals
-        assert not overlap, (
-            f"Signals found in both SIGNAL_GROUPS and COMMAND_GROUPS: {overlap}"
-        )
+        for signal in overlap:
+            assert COMMANDS[signal].access_mode == AccessMode.READ_WRITE, (
+                f"Signal {signal!r} overlaps command and telemetry groups "
+                f"but is not READ_WRITE (got {COMMANDS[signal].access_mode})"
+            )
 
     def test_all_writable_commands_are_covered(self) -> None:
-        """Every WRITE or READ_WRITE command must appear in exactly one group.
+        """Every encodable WRITE/READ_WRITE command must appear in a group.
+
+        Signals whose type_code is in ``_ENCODE_UNSUPPORTED`` are
+        excluded — they cannot be written until codec encoding is
+        implemented for their type.
 
         Technique: Specification-based — completeness check.
         """
@@ -140,6 +146,7 @@ class TestCommandGroupsIntegrity:
             name
             for name, cmd in COMMANDS.items()
             if cmd.access_mode in {AccessMode.WRITE, AccessMode.READ_WRITE}
+            and cmd.type_code not in _ENCODE_UNSUPPORTED
         }
         grouped_names = {
             signal for signals in COMMAND_GROUPS.values() for signal in signals

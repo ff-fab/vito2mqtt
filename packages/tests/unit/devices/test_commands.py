@@ -257,25 +257,28 @@ class TestMakeHandler:
         assert result is None
         assert fake.writes == {}
 
-    async def test_handler_deserializes_system_time(self) -> None:
-        """TI signal: ISO string must be deserialized to datetime.
+    async def test_handler_writes_validated_ct_schedule(self) -> None:
+        """CT signal: valid CycleTimeSchedule structure is written.
 
-        Technique: Cross-reference — TI type code triggers
-        deserialize_value which converts ISO string → datetime.
+        Technique: Cross-reference — CT type code triggers
+        _deserialize_cycle_time which validates the nested structure
+        before passing it to write_signal.
         """
-        from datetime import datetime
-
         fake = FakeOptolinkAdapter()
-        handler = _make_handler("system")
+        handler = _make_handler("hot_water")
 
-        iso_str = "2026-03-04T12:30:00"
-        payload = json.dumps({"system_time": iso_str})
+        schedule = [
+            [[8, 0], [22, 0]],
+            [[None, None], [None, None]],
+            [[None, None], [None, None]],
+            [[None, None], [None, None]],
+        ]
+        payload = json.dumps({"timer_hw_monday": schedule})
 
         await handler(payload=payload, port=fake)
 
-        assert "system_time" in fake.writes
-        assert isinstance(fake.writes["system_time"], datetime)
-        assert fake.writes["system_time"] == datetime.fromisoformat(iso_str)
+        assert "timer_hw_monday" in fake.writes
+        assert fake.writes["timer_hw_monday"] == schedule
 
     async def test_invalid_json_raises_invalid_signal_error(self) -> None:
         """Malformed JSON in handler must raise InvalidSignalError.
@@ -323,16 +326,25 @@ class TestHandlerClosureIsolation:
 
         # Write one signal from each group.
         payload_hw = json.dumps({"hot_water_setpoint": 55})
-        payload_sys = json.dumps({"system_time": "2026-01-01T00:00:00"})
+        payload_sys = json.dumps(
+            {
+                "timer_cp_monday": [
+                    [[8, 0], [22, 0]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                ]
+            }
+        )
 
         await handler_hot_water(payload=payload_hw, port=fake_hw)
         await handler_system(payload=payload_sys, port=fake_sys)
 
         assert "hot_water_setpoint" in fake_hw.writes
-        assert "system_time" in fake_sys.writes
+        assert "timer_cp_monday" in fake_sys.writes
 
         # Cross-check: the hot_water handler didn't write system signals.
-        assert "system_time" not in fake_hw.writes
+        assert "timer_cp_monday" not in fake_hw.writes
         assert "hot_water_setpoint" not in fake_sys.writes
 
 

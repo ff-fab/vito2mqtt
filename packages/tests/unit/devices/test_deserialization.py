@@ -28,6 +28,7 @@ from datetime import datetime
 import pytest
 
 from vito2mqtt.devices._serialization import deserialize_value, serialize_value
+from vito2mqtt.errors import InvalidSignalError
 
 # ---------------------------------------------------------------------------
 # Deserialization
@@ -47,7 +48,15 @@ class TestDeserializeValue:
             ("PR3", 12.5),
             ("BA", "normal"),
             ("USV", "heating"),
-            ("CT", [["08:00", "22:00"], ["00:00", "00:00"]]),
+            (
+                "CT",
+                [
+                    [[8, 0], [22, 0]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                ],
+            ),
             ("RT", "on"),
             ("ES", {"error": "normal operation", "timestamp": "2026-01-01T00:00:00"}),
         ],
@@ -65,12 +74,14 @@ class TestDeserializeValue:
         ],
     )
     def test_passthrough_types_unchanged(self, type_code: str, value: object) -> None:
-        """Passthrough types return the exact same value object.
+        """Passthrough types return an equal value.
 
-        Technique: Equivalence Partitioning — all non-TI types are passthrough.
+        Technique: Equivalence Partitioning — all non-TI/CT-active types
+        are passthrough.  CT is validated (so identity is preserved for
+        valid structures).
         """
         result = deserialize_value(value, type_code)
-        assert result is value
+        assert result == value
 
     def test_system_time_from_iso_string(self) -> None:
         """TI type converts an ISO 8601 string to a datetime object.
@@ -109,6 +120,58 @@ class TestDeserializeValue:
         sentinel = object()
         assert deserialize_value(sentinel, "XYZZY") is sentinel
 
+    def test_invalid_iso_string_raises(self) -> None:
+        """TI type with malformed ISO string must raise InvalidSignalError.
+
+        Technique: Error Guessing — bad timestamp from MQTT payload.
+        """
+        with pytest.raises(InvalidSignalError, match="Invalid ISO 8601 timestamp"):
+            deserialize_value("not-a-date", "TI")
+
+    def test_ct_wrong_outer_type_raises(self) -> None:
+        """CT with a non-list value must raise InvalidSignalError.
+
+        Technique: Error Guessing — plain string instead of schedule.
+        """
+        with pytest.raises(InvalidSignalError, match="CT value must be a list"):
+            deserialize_value("08:00-22:00", "CT")
+
+    def test_ct_wrong_pair_count_raises(self) -> None:
+        """CT with != 4 pairs must raise InvalidSignalError.
+
+        Technique: Equivalence Partitioning — wrong length.
+        """
+        with pytest.raises(InvalidSignalError, match="CT value must be a list of 4"):
+            deserialize_value([[[8, 0], [22, 0]]], "CT")
+
+    def test_ct_string_time_slots_raises(self) -> None:
+        """CT with string time values must raise InvalidSignalError.
+
+        Technique: Error Guessing — common mistake of sending "HH:MM" strings.
+        """
+        schedule = [
+            ["08:00", "22:00"],
+            ["00:00", "00:00"],
+            ["00:00", "00:00"],
+            ["00:00", "00:00"],
+        ]
+        with pytest.raises(InvalidSignalError, match="CT pair 0"):
+            deserialize_value(schedule, "CT")
+
+    def test_ct_float_element_raises(self) -> None:
+        """CT with float instead of int raises InvalidSignalError.
+
+        Technique: Error Guessing — JSON numbers are often floats.
+        """
+        schedule = [
+            [[8.0, 0], [22, 0]],
+            [[None, None], [None, None]],
+            [[None, None], [None, None]],
+            [[None, None], [None, None]],
+        ]
+        with pytest.raises(InvalidSignalError, match="hours must be int or null"):
+            deserialize_value(schedule, "CT")
+
 
 # ---------------------------------------------------------------------------
 # Round-trip: serialize ↔ deserialize
@@ -128,7 +191,15 @@ class TestSerializationRoundTrip:
             ("PR3", 12.5),
             ("BA", "normal"),
             ("USV", "heating"),
-            ("CT", [["08:00", "22:00"], ["00:00", "00:00"]]),
+            (
+                "CT",
+                [
+                    [[8, 0], [22, 0]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                    [[None, None], [None, None]],
+                ],
+            ),
         ],
         ids=[
             "IS10/float",
@@ -148,7 +219,7 @@ class TestSerializationRoundTrip:
         """
         deserialized = deserialize_value(value, type_code)
         serialized = serialize_value(deserialized, type_code)
-        assert serialized is value
+        assert serialized == value
 
     def test_round_trip_system_time(self) -> None:
         """serialize(datetime) → ISO string, deserialize(ISO) → datetime.

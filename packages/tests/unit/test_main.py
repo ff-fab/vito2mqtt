@@ -164,7 +164,7 @@ class TestDunderMain:
     """Verify __main__.py module is importable."""
 
     def test_dunder_main_importable(self) -> None:
-        """__main__.py must be importable without side effects.
+        """__main__.py must be importable without executing the CLI.
 
         Technique: Structural — python -m vito2mqtt support.
         """

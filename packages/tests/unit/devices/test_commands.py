@@ -577,6 +577,50 @@ class TestReadBeforeWrite:
         # No writes should have occurred
         assert adapter.writes == {}
 
+    async def test_is10_unchanged_skips_write(self) -> None:
+        """IS10 (float) unchanged value is correctly detected.
+
+        Technique: Cross-reference — serialization round-trip for IS10 type.
+        IS10 decodes to exact tenths (int/10), so float equality is safe.
+        FakeOptolinkAdapter returns 20.5 for IS10 signals.
+        """
+        fake = FakeOptolinkAdapter()
+        handler = _make_handler("heating_radiator")
+
+        # IS10 default is 20.5 — sending same value should skip write
+        payload = json.dumps({"heating_curve_gradient_m1": 20.5})
+        await handler(payload=payload, port=fake)
+
+        assert "heating_curve_gradient_m1" not in fake.writes
+
+    async def test_is10_changed_triggers_write(self) -> None:
+        """Changed IS10 (float) value must be written.
+
+        Technique: Cross-reference — different float triggers write.
+        """
+        fake = FakeOptolinkAdapter()
+        handler = _make_handler("heating_radiator")
+
+        payload = json.dumps({"heating_curve_gradient_m1": 15.0})
+        await handler(payload=payload, port=fake)
+
+        assert fake.writes["heating_curve_gradient_m1"] == 15.0
+
+    async def test_force_only_payload_is_noop(self) -> None:
+        """Payload with only __force and no signals must be a no-op.
+
+        Technique: Equivalence Partitioning — force-only edge case.
+        No reads, no writes, returns None.
+        """
+        fake = FakeOptolinkAdapter()
+        handler = _make_handler("hot_water")
+
+        payload = json.dumps({"__force": True})
+        result = await handler(payload=payload, port=fake)
+
+        assert result is None
+        assert fake.writes == {}
+
     async def test_ct_schedule_unchanged_skips_write(self) -> None:
         """CT (CycleTimeSchedule) unchanged value is correctly detected.
 

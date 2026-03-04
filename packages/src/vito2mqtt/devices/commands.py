@@ -147,13 +147,13 @@ def _make_handler(
             return None
 
         # Batch-read current values for comparison (READ_WRITE signals only)
+        current_values: dict[str, object] = {}
         if not force:
             readable_names = [
                 n for n in data if COMMANDS[n].access_mode == AccessMode.READ_WRITE
             ]
-            current_values = (
-                await port.read_signals(readable_names) if readable_names else {}
-            )
+            if readable_names:
+                current_values = await port.read_signals(readable_names)
 
         for name, value in data.items():
             type_code = COMMANDS[name].type_code

@@ -90,11 +90,13 @@ mqtt:
 ```
 
 !!! note "No telemetry feedback for `hot_water_setpoint`"
-    The `hot_water_setpoint` signal is a write-only command — it is not part of the
-    `hot_water` telemetry group (which only publishes `hot_water_temperature` and
-    `hot_water_outlet_temperature`). This means the HA number entity will not show
-    the current boiler value. To track the current setpoint, you would need to read
-    it via a separate command or rely on HA's optimistic mode.
+    The `hot_water_setpoint` signal is not included in the `hot_water` telemetry
+    group (which only publishes `hot_water_temperature` and
+    `hot_water_outlet_temperature`). It is available via the command interface, but
+    its current value is not published in MQTT telemetry, so the HA number entity
+    will not show the current boiler value based on telemetry alone. To track the
+    current setpoint, you can either read it explicitly using the command interface
+    or rely on HA's optimistic mode.
 
 ### Error status
 
@@ -209,13 +211,14 @@ mosquitto_sub -h localhost \
   -t 'vito2mqtt/vitodens200w/diagnosis/state' -v
 ```
 
-Error history entries (ES type) are returned as `[error_code, timestamp]` pairs:
+Error history entries (ES type) are returned as `[label, datetime]` pairs, where
+`label` is a human-readable error description:
 
 ```json
 {
   "error_status": 0,
-  "error_history_1": ["F5", "2026-01-15T14:30:00"],
-  "error_history_2": ["A9", "2025-12-03T08:15:00"]
+  "error_history_1": ["Flame loss during operation", "2026-01-15T14:30:00"],
+  "error_history_2": ["Flow sensor fault", "2025-12-03T08:15:00"]
 }
 ```
 

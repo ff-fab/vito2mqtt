@@ -4,8 +4,10 @@ title: MQTT Signal Reference
 
 # MQTT Signal Reference
 
-Complete reference of all 89 signals supported by vito2mqtt. Signals are organized
-into 7 domain groups, each published as a JSON object to its own MQTT topic.
+Complete reference of the 88 signals exposed by vito2mqtt over MQTT. These exposed
+signals are organized into 7 domain groups, each published as a JSON object to its
+own MQTT topic. An additional internal command (`system_time`) exists in the
+registry but is not exposed via these topics.
 
 ---
 

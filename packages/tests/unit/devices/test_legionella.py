@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from datetime import datetime, time
 from typing import Any
@@ -498,6 +499,31 @@ def _instant_wait_for(ctx: _FakeContext):
         yield
 
 
+def _make_inject_start(
+    ctx: _FakeContext,
+    *,
+    cancel_on_heating: bool = False,
+) -> Callable[[dict[str, object]], Awaitable[None]]:
+    """Factory for ``publish_state`` side-effects that inject commands.
+
+    Injects a ``start`` command on first ``idle`` state.  Optionally
+    injects a ``cancel`` command on first ``heating`` state.
+    """
+    _started = False
+    _cancelled = False
+
+    async def _inject(state: dict[str, object]) -> None:
+        nonlocal _started, _cancelled
+        if state == {"status": "idle"} and not _started:
+            _started = True
+            await ctx._command_handler(_CMD_TOPIC, _CMD_START)
+        elif cancel_on_heating and state.get("status") == "heating" and not _cancelled:
+            _cancelled = True
+            await ctx._command_handler(_CMD_TOPIC, _CMD_CANCEL)
+
+    return _inject
+
+
 # ===========================================================================
 # _legionella_device — state machine tests
 # ===========================================================================
@@ -580,17 +606,7 @@ class TestLegionellaDevice:
         port.read_signal = AsyncMock(return_value=_SCHEDULE_06_14)
         store = _FakeDeviceStore()
         ctx = _FakeContext(port=port, shutdown_after_waits=3)
-
-        # Inject "start" command when device publishes "idle"
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         # Pin datetime to Monday 10:00 (inside heating window)
         with (
@@ -622,16 +638,7 @@ class TestLegionellaDevice:
         port.read_signal = AsyncMock(return_value=empty_schedule)
         store = _FakeDeviceStore()
         ctx = _FakeContext(port=port, shutdown_after_waits=3)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -671,16 +678,7 @@ class TestLegionellaDevice:
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 2
         ctx = _FakeContext(port=port, shutdown_after_waits=5, settings=settings)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -734,20 +732,7 @@ class TestLegionellaDevice:
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 10  # long duration
         ctx = _FakeContext(port=port, shutdown_after_waits=15, settings=settings)
-
-        _started = False
-        _cancelled = False
-
-        async def _inject_commands(state: dict[str, object]) -> None:
-            nonlocal _started, _cancelled
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-            elif state.get("status") == "heating" and not _cancelled:
-                _cancelled = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_CANCEL)
-
-        ctx.publish_state.side_effect = _inject_commands
+        ctx.publish_state.side_effect = _make_inject_start(ctx, cancel_on_heating=True)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -789,16 +774,7 @@ class TestLegionellaDevice:
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 2  # short duration for test
         ctx = _FakeContext(port=port, shutdown_after_waits=5, settings=settings)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -840,16 +816,7 @@ class TestLegionellaDevice:
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 3
         ctx = _FakeContext(port=port, shutdown_after_waits=8, settings=settings)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -896,16 +863,7 @@ class TestLegionellaDevice:
         # heating (the start command fills the queue on the first main-loop
         # wait_for, so only countdown wait_fors count as timeouts).
         ctx = _FakeContext(port=port, shutdown_after_waits=2, settings=settings)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
@@ -960,16 +918,7 @@ class TestLegionellaDevice:
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 10
         ctx = _FakeContext(port=port, shutdown_after_waits=2, settings=settings)
-
-        _started = False
-
-        async def _inject_start(state: dict[str, object]) -> None:
-            nonlocal _started
-            if state == {"status": "idle"} and not _started:
-                _started = True
-                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
-
-        ctx.publish_state.side_effect = _inject_start
+        ctx.publish_state.side_effect = _make_inject_start(ctx)
 
         with (
             patch("vito2mqtt.devices.legionella.datetime") as mock_dt,

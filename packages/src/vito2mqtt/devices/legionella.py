@@ -13,15 +13,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Pure-logic functions for the legionella treatment feature.
-
-The state machine and device registration will be added in Phase 2.
+"""Legionella treatment feature — schedule check & async device state machine.
 
 This module provides:
+
 - ``TIMER_SIGNAL_FOR_DAY``: Maps ``datetime.weekday()`` values to the
   corresponding hot-water timer signal names in the command registry.
 - ``is_within_heating_window``: Checks whether a given time falls within
   an active heating schedule slot with sufficient remaining margin.
+- ``_legionella_device``: Async device function implementing the treatment
+  state machine (idle → checking → heating → restoring → idle).
+- ``register_legionella``: Imperatively registers the device on an
+  :class:`~cosalette.App` instance.
 
 References:
     ADR-007 — Telemetry Coalescing Groups
@@ -29,9 +32,17 @@ References:
 
 from __future__ import annotations
 
-from datetime import time, timedelta
+import asyncio
+import json
+import logging
+from datetime import datetime, time, timedelta
+
+from cosalette import App, DeviceContext, DeviceStore
 
 from vito2mqtt.optolink.codec import CycleTimeSchedule
+from vito2mqtt.ports import OptolinkPort
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Day-to-signal mapping
@@ -47,6 +58,12 @@ TIMER_SIGNAL_FOR_DAY: dict[int, str] = {
     6: "timer_hw_sunday",
 }
 """Maps ``datetime.weekday()`` (0=Monday … 6=Sunday) to signal names."""
+
+LEGIONELLA_SETPOINT_SIGNAL = "hot_water_setpoint"
+"""Signal name used to read/write the hot-water setpoint temperature."""
+
+_STORE_KEY_ORIGINAL_SETPOINT = "original_setpoint"
+_STORE_KEY_ACTIVE = "active"
 
 # ---------------------------------------------------------------------------
 # Heating window check
@@ -119,3 +136,212 @@ def is_within_heating_window(
             return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Async device state machine
+# ---------------------------------------------------------------------------
+
+
+async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
+    """Legionella treatment device loop.
+
+    Runs as a long-lived concurrent task managed by the cosalette framework.
+    Waits for ``{"action": "start"}`` commands on ``legionella/set``, then
+    performs a safety-checked hot-water setpoint boost for a configurable
+    duration.
+
+    The lifecycle:
+
+    1. **Startup recovery** — if a previous run was interrupted mid-treatment,
+       the original setpoint is restored from the :class:`DeviceStore`.
+    2. **Idle** — sleeps until a command arrives via MQTT.
+    3. **Checking** — reads today's timer schedule and verifies the heating
+       window has enough remaining time.
+    4. **Heating** — boosts the setpoint and counts down minute-by-minute.
+    5. **Restoring** — writes the original setpoint back and clears state.
+
+    Parameters:
+        ctx: Per-device runtime context (injected by framework).
+        store: Per-device persistent store (injected by framework).
+    """
+    port = ctx.adapter(OptolinkPort)  # type: ignore[type-abstract]
+    settings = ctx.settings
+
+    # -- Shared event for command → loop communication ----------------------
+    command_event = asyncio.Event()
+    pending_action: dict[str, str] = {}
+
+    @ctx.on_command
+    async def _handle_command(topic: str, payload: str) -> None:  # noqa: ARG001
+        """Parse incoming MQTT command and signal the main loop."""
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.warning("Ignoring malformed JSON on %s: %s", topic, payload)
+            return
+
+        action = data.get("action")
+        if action not in {"start", "cancel"}:
+            logger.warning("Unknown legionella action: %r", action)
+            return
+
+        pending_action["action"] = action
+        command_event.set()
+
+    # -- Startup recovery ---------------------------------------------------
+    if store.get(_STORE_KEY_ACTIVE):
+        original = store.get(_STORE_KEY_ORIGINAL_SETPOINT)
+        logger.info(
+            "Recovering from interrupted treatment — restoring setpoint to %s",
+            original,
+        )
+        if original is not None:
+            await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, original)
+        store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
+        store.save()
+        await ctx.publish_state({"status": "recovered", "original_setpoint": original})
+
+    # -- Publish initial idle state -----------------------------------------
+    await ctx.publish_state({"status": "idle"})
+
+    # -- Main loop ----------------------------------------------------------
+    while not ctx.shutdown_requested:
+        # Wait for a command (wake every 5 s to check shutdown)
+        command_event.clear()
+        await ctx.sleep(5)
+        if not command_event.is_set():
+            continue
+
+        action = pending_action.pop("action", None)
+
+        if action == "start":
+            await _handle_start(
+                ctx,
+                store,
+                port,
+                settings,
+                command_event,
+                pending_action,
+            )
+        # "cancel" while idle is a no-op
+
+
+async def _handle_start(
+    ctx: DeviceContext,
+    store: DeviceStore,
+    port: OptolinkPort,
+    settings: object,
+    command_event: asyncio.Event,
+    pending_action: dict[str, str],
+) -> None:
+    """Execute a full start → heat → restore cycle.
+
+    Extracted from the main loop for readability and testability.
+    """
+    # -- Checking phase -----------------------------------------------------
+    await ctx.publish_state({"status": "checking"})
+
+    now = datetime.now()  # noqa: DTZ005
+    weekday = now.weekday()
+    timer_signal = TIMER_SIGNAL_FOR_DAY[weekday]
+    schedule = await port.read_signal(timer_signal)
+
+    feasible = is_within_heating_window(
+        schedule,
+        now.time(),
+        safety_margin_minutes=settings.legionella_safety_margin_minutes,  # type: ignore[attr-defined]
+    )
+    if not feasible:
+        reason = (
+            f"Current time {now.time():%H:%M} is outside the "
+            f"heating window for {timer_signal}"
+        )
+        logger.info("Legionella treatment rejected: %s", reason)
+        await ctx.publish_state({"status": "rejected", "reason": reason})
+        await ctx.publish_state({"status": "idle"})
+        return
+
+    # -- Save original setpoint ---------------------------------------------
+    original_setpoint = await port.read_signal(LEGIONELLA_SETPOINT_SIGNAL)
+    store.update(
+        {
+            _STORE_KEY_ORIGINAL_SETPOINT: original_setpoint,
+            _STORE_KEY_ACTIVE: True,
+        }
+    )
+    store.save()
+
+    # -- Set treatment temperature ------------------------------------------
+    target_temp = settings.legionella_temperature  # type: ignore[attr-defined]
+    await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, target_temp)
+
+    remaining_minutes: int = settings.legionella_duration_minutes  # type: ignore[attr-defined]
+    logger.info(
+        "Legionella treatment started — target=%s, duration=%d min",
+        target_temp,
+        remaining_minutes,
+    )
+
+    # -- Heating countdown --------------------------------------------------
+    await ctx.publish_state(
+        {
+            "status": "heating",
+            "target_temperature": target_temp,
+            "original_setpoint": original_setpoint,
+            "remaining_minutes": remaining_minutes,
+        }
+    )
+
+    while remaining_minutes > 0 and not ctx.shutdown_requested:
+        command_event.clear()
+        await ctx.sleep(60)
+
+        # Check for cancel
+        if command_event.is_set() and pending_action.get("action") == "cancel":
+            pending_action.pop("action", None)
+            logger.info("Legionella treatment cancelled")
+            break
+
+        remaining_minutes -= 1
+        if remaining_minutes > 0 and not ctx.shutdown_requested:
+            await ctx.publish_state(
+                {
+                    "status": "heating",
+                    "target_temperature": target_temp,
+                    "original_setpoint": original_setpoint,
+                    "remaining_minutes": remaining_minutes,
+                }
+            )
+
+    # -- Restore original setpoint ------------------------------------------
+    if not ctx.shutdown_requested:
+        await ctx.publish_state(
+            {
+                "status": "restoring",
+                "original_setpoint": original_setpoint,
+            }
+        )
+        await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, original_setpoint)
+        store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
+        store.save()
+        await ctx.publish_state({"status": "idle"})
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
+def register_legionella(app: App) -> None:
+    """Register the legionella treatment device on *app*.
+
+    This is the imperative entry point called from the application's
+    startup wiring (main.py).  It delegates to
+    :meth:`cosalette.App.add_device` with the correct device name and
+    async handler function.
+
+    Parameters:
+        app: The cosalette application instance.
+    """
+    app.add_device("legionella", _legionella_device)

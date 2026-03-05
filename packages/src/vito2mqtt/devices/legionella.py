@@ -227,6 +227,65 @@ async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
         # "cancel" while idle is a no-op
 
 
+async def _heating_countdown(
+    ctx: DeviceContext,
+    command_event: asyncio.Event,
+    pending_action: dict[str, str],
+    target_temp: object,
+    original_setpoint: object,
+    remaining_minutes: int,
+) -> None:
+    """Count down minute-by-minute, publishing heating state updates.
+
+    Exits early if the device shuts down or a ``cancel`` command arrives
+    via *command_event*.
+    """
+    while remaining_minutes > 0 and not ctx.shutdown_requested:
+        command_event.clear()
+        await ctx.sleep(60)
+
+        # Check for cancel
+        if command_event.is_set() and pending_action.get("action") == "cancel":
+            pending_action.pop("action", None)
+            logger.info("Legionella treatment cancelled")
+            break
+
+        remaining_minutes -= 1
+        if remaining_minutes > 0 and not ctx.shutdown_requested:
+            await ctx.publish_state(
+                {
+                    "status": "heating",
+                    "target_temperature": target_temp,
+                    "original_setpoint": original_setpoint,
+                    "remaining_minutes": remaining_minutes,
+                }
+            )
+
+
+async def _restore_setpoint(
+    ctx: DeviceContext,
+    store: DeviceStore,
+    port: OptolinkPort,
+    original_setpoint: object,
+) -> None:
+    """Restore the original hot-water setpoint after treatment.
+
+    Skipped when the device is shutting down — recovery handles it on
+    next startup instead.
+    """
+    if not ctx.shutdown_requested:
+        await ctx.publish_state(
+            {
+                "status": "restoring",
+                "original_setpoint": original_setpoint,
+            }
+        )
+        await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, original_setpoint)
+        store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
+        store.save()
+        await ctx.publish_state({"status": "idle"})
+
+
 async def _handle_start(
     ctx: DeviceContext,
     store: DeviceStore,
@@ -237,7 +296,8 @@ async def _handle_start(
 ) -> None:
     """Execute a full start → heat → restore cycle.
 
-    Extracted from the main loop for readability and testability.
+    Delegates the minute-by-minute countdown to :func:`_heating_countdown`
+    and the setpoint restoration to :func:`_restore_setpoint`.
     """
     # -- Checking phase -----------------------------------------------------
     await ctx.publish_state({"status": "checking"})
@@ -293,39 +353,17 @@ async def _handle_start(
         }
     )
 
-    while remaining_minutes > 0 and not ctx.shutdown_requested:
-        command_event.clear()
-        await ctx.sleep(60)
-
-        # Check for cancel
-        if command_event.is_set() and pending_action.get("action") == "cancel":
-            pending_action.pop("action", None)
-            logger.info("Legionella treatment cancelled")
-            break
-
-        remaining_minutes -= 1
-        if remaining_minutes > 0 and not ctx.shutdown_requested:
-            await ctx.publish_state(
-                {
-                    "status": "heating",
-                    "target_temperature": target_temp,
-                    "original_setpoint": original_setpoint,
-                    "remaining_minutes": remaining_minutes,
-                }
-            )
+    await _heating_countdown(
+        ctx,
+        command_event,
+        pending_action,
+        target_temp,
+        original_setpoint,
+        remaining_minutes,
+    )
 
     # -- Restore original setpoint ------------------------------------------
-    if not ctx.shutdown_requested:
-        await ctx.publish_state(
-            {
-                "status": "restoring",
-                "original_setpoint": original_setpoint,
-            }
-        )
-        await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, original_setpoint)
-        store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
-        store.save()
-        await ctx.publish_state({"status": "idle"})
+    await _restore_setpoint(ctx, store, port, original_setpoint)
 
 
 # ---------------------------------------------------------------------------

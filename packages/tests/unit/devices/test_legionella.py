@@ -27,7 +27,10 @@ Test Techniques Used:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+from contextlib import contextmanager
 from datetime import datetime, time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -401,64 +404,98 @@ class _FakeDeviceStore:
         self.save_calls += 1
 
 
-def _make_ctx(
-    *,
-    port: OptolinkPort | None = None,
-    shutdown_after: int = 1,
-    settings: Any = None,
-) -> MagicMock:
-    """Build a mock DeviceContext for device-loop tests.
+class _FakeContext:
+    """Lightweight DeviceContext stub with isolated per-instance state.
+
+    Replaces the previous approach of mutating ``type(MagicMock)`` class
+    attributes, which leaked between tests (Action 6).
 
     Parameters:
-        port: The OptolinkPort mock to return from ``ctx.adapter()``.
-        shutdown_after: How many ``ctx.sleep`` calls before
-            ``shutdown_requested`` becomes ``True``.
-        settings: Object returned by ``ctx.settings``.
-
-    The ``ctx.sleep`` is an :class:`AsyncMock` that counts invocations
-    and flips ``shutdown_requested`` after *shutdown_after* calls.
+        port: The OptolinkPort mock returned by ``adapter()``.
+        settings: The settings object returned by the ``settings`` property.
+        shutdown_after_waits: Number of empty-queue ``asyncio.wait_for``
+            timeout cycles (counted by ``_instant_wait_for``) before
+            ``shutdown_requested`` flips to ``True``.
     """
-    ctx = MagicMock()
-    ctx.publish_state = AsyncMock()
-    ctx.sleep = AsyncMock()
 
-    # Track sleep calls so we can flip shutdown_requested
-    _sleep_count = {"n": 0}
+    def __init__(
+        self,
+        port: OptolinkPort | None = None,
+        settings: Any = None,
+        shutdown_after_waits: int = 1,
+    ) -> None:
+        self.publish_state = AsyncMock()
+        self._port = port or AsyncMock(spec=OptolinkPort)
+        self._shutdown_after = shutdown_after_waits
+        self._timeout_count = 0
+        self._shutdown = False
 
-    async def _counting_sleep(seconds: float) -> None:  # noqa: ARG001
-        _sleep_count["n"] += 1
-        if _sleep_count["n"] >= shutdown_after:
-            # Flip the property to True
-            type(ctx).shutdown_requested = property(lambda self: True)
+        if settings is None:
+            settings = MagicMock()
+            settings.legionella_safety_margin_minutes = 30
+            settings.legionella_temperature = 68
+            settings.legionella_duration_minutes = 3
+        self._settings = settings
 
-    ctx.sleep.side_effect = _counting_sleep
+        # on_command stores the handler so tests can invoke it
+        self._command_handler: Any = None
 
-    # Initially not shutting down
-    type(ctx).shutdown_requested = property(lambda self: False)
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown
 
-    # Settings mock
-    if settings is None:
-        settings = MagicMock()
-        settings.legionella_safety_margin_minutes = 30
-        settings.legionella_temperature = 68
-        settings.legionella_duration_minutes = 3
-    type(ctx).settings = property(lambda self: settings)
+    @property
+    def settings(self) -> Any:
+        return self._settings
 
-    # Port mock
-    if port is None:
-        port = AsyncMock(spec=OptolinkPort)
-    ctx.adapter = MagicMock(return_value=port)
+    def adapter(self, _protocol: type) -> Any:
+        return self._port
 
-    # on_command stores the handler so tests can invoke it
-    ctx._command_handler = None
-
-    def _on_command(handler: Any) -> Any:
-        ctx._command_handler = handler
+    def on_command(self, handler: Any) -> Any:
+        self._command_handler = handler
         return handler
 
-    ctx.on_command = _on_command
+    def record_timeout(self) -> None:
+        """Called by ``_instant_wait_for`` on each TimeoutError."""
+        self._timeout_count += 1
+        if self._timeout_count >= self._shutdown_after:
+            self._shutdown = True
 
-    return ctx
+
+@contextmanager
+def _instant_wait_for(ctx: _FakeContext):
+    """Patch ``asyncio.wait_for`` in the legionella module for instant timeouts.
+
+    When the awaitable completes in a single event-loop step (e.g. queue
+    has an item or an ``AsyncMock`` is awaited), the result is returned
+    normally.  Otherwise the task is cancelled, ``TimeoutError`` is
+    raised, and a timeout is recorded on the context so that
+    ``shutdown_requested`` flips after the configured number of cycles.
+
+    This avoids real 5 s / 60 s waits in tests while preserving the
+    Queue-based command dispatch semantics introduced by Action 1.
+
+    **Why not ``timeout=0``?**  CPython's ``wait_for`` with ``timeout<=0``
+    cancels the task *before* it runs, so ``queue.get()`` never sees
+    available items.  Instead we ``ensure_future`` + ``sleep(0)`` to give
+    the task exactly one event-loop iteration, then check ``done()``.
+    """
+
+    async def _patched(coro, *, timeout):  # noqa: ANN001, ARG001, ANN202
+        task = asyncio.ensure_future(coro)
+        # Yield once so the task can run a single step
+        await asyncio.sleep(0)
+        if task.done():
+            return task.result()  # re-raises if the task had an exception
+        # Task still pending → simulate instant timeout
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await task
+        ctx.record_timeout()
+        raise TimeoutError
+
+    with patch("vito2mqtt.devices.legionella.asyncio.wait_for", _patched):
+        yield
 
 
 # ===========================================================================
@@ -472,9 +509,16 @@ class TestLegionellaDevice:
     Technique: State Transition Testing — verify transitions between
     idle, checking, heating, restoring, and recovered states.
 
-    Testing pattern: The device runs an infinite loop. To test it we
-    control the shutdown flag via ``_make_ctx(shutdown_after=N)`` which
-    flips ``shutdown_requested`` to ``True`` after N ``ctx.sleep`` calls.
+    Testing pattern:
+    1. ``_FakeContext`` is a proper stub class with per-instance shutdown
+       state (no ``type(mock)`` mutation leaking between tests).
+    2. ``_instant_wait_for`` patches ``asyncio.wait_for`` so empty-queue
+       polls resolve instantly as ``TimeoutError``.  After a configurable
+       number of timeouts, ``shutdown_requested`` flips.
+    3. Commands are injected deterministically via ``publish_state``
+       side-effects — when the device publishes a known state, the
+       side-effect fires the command *before* the next ``wait_for``,
+       ensuring the queue already has an item.
     """
 
     async def test_startup_recovery_restores_setpoint(self) -> None:
@@ -491,10 +535,11 @@ class TestLegionellaDevice:
                 _STORE_KEY_ORIGINAL_SETPOINT: 50,
             }
         )
-        ctx = _make_ctx(port=port, shutdown_after=1)
+        ctx = _FakeContext(port=port, shutdown_after_waits=1)
 
         # Act
-        await _legionella_device(ctx, store)  # type: ignore[arg-type]
+        with _instant_wait_for(ctx):
+            await _legionella_device(ctx, store)  # type: ignore[arg-type]
 
         # Assert — original setpoint written back
         port.write_signal.assert_any_await(LEGIONELLA_SETPOINT_SIGNAL, 50)
@@ -516,10 +561,11 @@ class TestLegionellaDevice:
         """
         # Arrange
         store = _FakeDeviceStore()
-        ctx = _make_ctx(shutdown_after=1)
+        ctx = _FakeContext(shutdown_after_waits=1)
 
         # Act
-        await _legionella_device(ctx, store)  # type: ignore[arg-type]
+        with _instant_wait_for(ctx):
+            await _legionella_device(ctx, store)  # type: ignore[arg-type]
 
         # Assert
         ctx.publish_state.assert_any_await({"status": "idle"})
@@ -533,25 +579,24 @@ class TestLegionellaDevice:
         port = AsyncMock(spec=OptolinkPort)
         port.read_signal = AsyncMock(return_value=_SCHEDULE_06_14)
         store = _FakeDeviceStore()
-        ctx = _make_ctx(port=port, shutdown_after=3)
+        ctx = _FakeContext(port=port, shutdown_after_waits=3)
 
-        # Simulate command arriving on first sleep
-        original_sleep = ctx.sleep.side_effect
+        # Inject "start" command when device publishes "idle"
+        _started = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            # On the first sleep (idle poll), fire a "start" command
-            if ctx.sleep.await_count == 1:
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            # Delegate to the original counting sleep
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_start
 
         # Pin datetime to Monday 10:00 (inside heating window)
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # Monday  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -576,21 +621,22 @@ class TestLegionellaDevice:
         port = AsyncMock(spec=OptolinkPort)
         port.read_signal = AsyncMock(return_value=empty_schedule)
         store = _FakeDeviceStore()
-        ctx = _make_ctx(port=port, shutdown_after=3)
+        ctx = _FakeContext(port=port, shutdown_after_waits=3)
 
-        original_sleep = ctx.sleep.side_effect
+        _started = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            if ctx.sleep.await_count == 1:
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_start
 
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -624,21 +670,22 @@ class TestLegionellaDevice:
         settings.legionella_safety_margin_minutes = 30
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 2
-        ctx = _make_ctx(port=port, shutdown_after=5, settings=settings)
+        ctx = _FakeContext(port=port, shutdown_after_waits=5, settings=settings)
 
-        original_sleep = ctx.sleep.side_effect
+        _started = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            if ctx.sleep.await_count == 1:
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_start
 
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # Monday  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -686,28 +733,26 @@ class TestLegionellaDevice:
         settings.legionella_safety_margin_minutes = 30
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 10  # long duration
-        ctx = _make_ctx(port=port, shutdown_after=6, settings=settings)
+        ctx = _FakeContext(port=port, shutdown_after_waits=15, settings=settings)
 
-        original_sleep = ctx.sleep.side_effect
+        _started = False
+        _cancelled = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            if ctx.sleep.await_count == 1:
-                # First idle sleep → fire "start"
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            elif ctx.sleep.await_count == 3:
-                # During heating → fire "cancel"
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_CANCEL,
-                )
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_commands(state: dict[str, object]) -> None:
+            nonlocal _started, _cancelled
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
+            elif state.get("status") == "heating" and not _cancelled:
+                _cancelled = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_CANCEL)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_commands
 
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -743,21 +788,22 @@ class TestLegionellaDevice:
         settings.legionella_safety_margin_minutes = 30
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 2  # short duration for test
-        ctx = _make_ctx(port=port, shutdown_after=10, settings=settings)
+        ctx = _FakeContext(port=port, shutdown_after_waits=5, settings=settings)
 
-        original_sleep = ctx.sleep.side_effect
+        _started = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            if ctx.sleep.await_count == 1:
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_start
 
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -793,21 +839,22 @@ class TestLegionellaDevice:
         settings.legionella_safety_margin_minutes = 30
         settings.legionella_temperature = 68
         settings.legionella_duration_minutes = 3
-        ctx = _make_ctx(port=port, shutdown_after=10, settings=settings)
+        ctx = _FakeContext(port=port, shutdown_after_waits=8, settings=settings)
 
-        original_sleep = ctx.sleep.side_effect
+        _started = False
 
-        async def _sleep_with_command(seconds: float) -> None:
-            if ctx.sleep.await_count == 1:
-                await ctx._command_handler(
-                    _CMD_TOPIC,
-                    _CMD_START,
-                )
-            await original_sleep(seconds)  # type: ignore[misc]
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
 
-        ctx.sleep.side_effect = _sleep_with_command
+        ctx.publish_state.side_effect = _inject_start
 
-        with patch("vito2mqtt.devices.legionella.datetime") as mock_dt:
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
             mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -823,6 +870,146 @@ class TestLegionellaDevice:
         assert remaining_values[0] == 3
         assert remaining_values == sorted(remaining_values, reverse=True)
         assert len(remaining_values) >= 2
+
+    async def test_graceful_shutdown_best_effort_restore(self) -> None:
+        """Shutdown during heating → best-effort restore attempted.
+
+        Technique: Error Guessing — graceful shutdown should not leave the
+        boiler at the elevated temperature.
+        """
+        # Arrange
+        port = AsyncMock(spec=OptolinkPort)
+
+        async def _read_signal(name: str) -> Any:
+            if name == LEGIONELLA_SETPOINT_SIGNAL:
+                return 50
+            return _SCHEDULE_06_14
+
+        port.read_signal = AsyncMock(side_effect=_read_signal)
+        port.write_signal = AsyncMock()
+        store = _FakeDeviceStore()
+        settings = MagicMock()
+        settings.legionella_safety_margin_minutes = 30
+        settings.legionella_temperature = 68
+        settings.legionella_duration_minutes = 10
+        # Shutdown after 2 countdown timeouts so the device exits during
+        # heating (the start command fills the queue on the first main-loop
+        # wait_for, so only countdown wait_fors count as timeouts).
+        ctx = _FakeContext(port=port, shutdown_after_waits=2, settings=settings)
+
+        _started = False
+
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
+
+        ctx.publish_state.side_effect = _inject_start
+
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
+            mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            await _legionella_device(ctx, store)  # type: ignore[arg-type]
+
+        # Assert — best-effort restore was attempted: the last write
+        # should be the original setpoint (50), not the treatment temp (68)
+        last_write = port.write_signal.await_args_list[-1]
+        assert last_write == call(LEGIONELLA_SETPOINT_SIGNAL, 50)
+
+        # Assert — store cleared after successful restore
+        assert store.get(_STORE_KEY_ACTIVE) is False
+        assert store.get(_STORE_KEY_ORIGINAL_SETPOINT) is None
+
+    async def test_graceful_shutdown_restore_failure_preserves_store(
+        self,
+    ) -> None:
+        """Shutdown + write failure → store stays active for crash recovery.
+
+        Technique: Error Guessing — serial timeout during shutdown means
+        crash recovery must handle it on next startup.
+        """
+        # Arrange
+        port = AsyncMock(spec=OptolinkPort)
+        _write_count = 0
+
+        async def _read_signal(name: str) -> Any:
+            if name == LEGIONELLA_SETPOINT_SIGNAL:
+                return 50
+            return _SCHEDULE_06_14
+
+        async def _write_signal(name: str, value: object) -> None:  # noqa: ARG001
+            nonlocal _write_count
+            _write_count += 1
+            if _write_count > 1:
+                # First write (set treatment temp) succeeds.
+                # Second write (restore during shutdown) fails.
+                msg = "Serial timeout"
+                raise OSError(msg)
+
+        port.read_signal = AsyncMock(side_effect=_read_signal)
+        port.write_signal = AsyncMock(side_effect=_write_signal)
+        store = _FakeDeviceStore()
+        settings = MagicMock()
+        settings.legionella_safety_margin_minutes = 30
+        settings.legionella_temperature = 68
+        settings.legionella_duration_minutes = 10
+        ctx = _FakeContext(port=port, shutdown_after_waits=2, settings=settings)
+
+        _started = False
+
+        async def _inject_start(state: dict[str, object]) -> None:
+            nonlocal _started
+            if state == {"status": "idle"} and not _started:
+                _started = True
+                await ctx._command_handler(_CMD_TOPIC, _CMD_START)
+
+        ctx.publish_state.side_effect = _inject_start
+
+        with (
+            patch("vito2mqtt.devices.legionella.datetime") as mock_dt,
+            _instant_wait_for(ctx),
+        ):
+            mock_now = datetime(2026, 3, 2, 10, 0)  # noqa: DTZ001
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            await _legionella_device(ctx, store)  # type: ignore[arg-type]
+
+        # Assert — store still active because restore write failed
+        assert store.get(_STORE_KEY_ACTIVE) is True
+        assert store.get(_STORE_KEY_ORIGINAL_SETPOINT) == 50
+
+    async def test_non_dict_json_rejected(self) -> None:
+        """Non-object JSON payloads (arrays, strings) are rejected gracefully.
+
+        Technique: Error Guessing — json.loads accepts arrays and scalars
+        which would cause AttributeError on .get() without the guard.
+        """
+        # Arrange
+        store = _FakeDeviceStore()
+        ctx = _FakeContext(shutdown_after_waits=1)
+
+        with _instant_wait_for(ctx):
+            await _legionella_device(ctx, store)  # type: ignore[arg-type]
+
+        # Now invoke the handler with non-dict JSON — should not raise
+        assert ctx._command_handler is not None
+        await ctx._command_handler(_CMD_TOPIC, "[]")
+        await ctx._command_handler(_CMD_TOPIC, '"just a string"')
+        await ctx._command_handler(_CMD_TOPIC, "42")
+        await ctx._command_handler(_CMD_TOPIC, "null")
+
+        # No exception means the guard works.  Also verify no state
+        # change — only idle was published (no checking/heating/etc.)
+        published = [c.args[0] for c in ctx.publish_state.await_args_list]
+        statuses = [p["status"] for p in published]
+        assert statuses == ["idle"]
 
 
 # ===========================================================================

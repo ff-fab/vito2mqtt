@@ -39,6 +39,7 @@ from datetime import datetime, time, timedelta
 
 from cosalette import App, DeviceContext, DeviceStore
 
+from vito2mqtt.config import Vito2MqttSettings
 from vito2mqtt.optolink.codec import CycleTimeSchedule
 from vito2mqtt.ports import OptolinkPort
 
@@ -166,19 +167,22 @@ async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
         store: Per-device persistent store (injected by framework).
     """
     port = ctx.adapter(OptolinkPort)  # type: ignore[type-abstract]
-    settings = ctx.settings
+    settings: Vito2MqttSettings = ctx.settings  # type: ignore[assignment]
 
-    # -- Shared event for command → loop communication ----------------------
-    command_event = asyncio.Event()
-    pending_action: dict[str, str] = {}
+    # -- Queue for command → loop communication -----------------------------
+    command_queue: asyncio.Queue[str] = asyncio.Queue()
 
     @ctx.on_command
     async def _handle_command(topic: str, payload: str) -> None:  # noqa: ARG001
-        """Parse incoming MQTT command and signal the main loop."""
+        """Parse incoming MQTT command and enqueue it for the main loop."""
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
             logger.warning("Ignoring malformed JSON on %s: %s", topic, payload)
+            return
+
+        if not isinstance(data, dict):
+            logger.warning("Ignoring non-object JSON on %s: %s", topic, payload)
             return
 
         action = data.get("action")
@@ -186,8 +190,7 @@ async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
             logger.warning("Unknown legionella action: %r", action)
             return
 
-        pending_action["action"] = action
-        command_event.set()
+        await command_queue.put(action)
 
     # -- Startup recovery ---------------------------------------------------
     if store.get(_STORE_KEY_ACTIVE):
@@ -208,12 +211,10 @@ async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
     # -- Main loop ----------------------------------------------------------
     while not ctx.shutdown_requested:
         # Wait for a command (wake every 5 s to check shutdown)
-        command_event.clear()
-        await ctx.sleep(5)
-        if not command_event.is_set():
+        try:
+            action = await asyncio.wait_for(command_queue.get(), timeout=5)
+        except TimeoutError:
             continue
-
-        action = pending_action.pop("action", None)
 
         if action == "start":
             await _handle_start(
@@ -221,16 +222,14 @@ async def _legionella_device(ctx: DeviceContext, store: DeviceStore) -> None:
                 store,
                 port,
                 settings,
-                command_event,
-                pending_action,
+                command_queue,
             )
         # "cancel" while idle is a no-op
 
 
 async def _heating_countdown(
     ctx: DeviceContext,
-    command_event: asyncio.Event,
-    pending_action: dict[str, str],
+    command_queue: asyncio.Queue[str],
     target_temp: object,
     original_setpoint: object,
     remaining_minutes: int,
@@ -238,15 +237,19 @@ async def _heating_countdown(
     """Count down minute-by-minute, publishing heating state updates.
 
     Exits early if the device shuts down or a ``cancel`` command arrives
-    via *command_event*.
+    via *command_queue*.  Uses ``asyncio.wait_for`` on the queue so that
+    cancel commands are acted on immediately rather than waiting for the
+    next 60-second tick.
     """
     while remaining_minutes > 0 and not ctx.shutdown_requested:
-        command_event.clear()
-        await ctx.sleep(60)
+        # Wait 60 s for a command; timeout means "one minute elapsed"
+        try:
+            action = await asyncio.wait_for(command_queue.get(), timeout=60)
+        except TimeoutError:
+            action = None
 
         # Check for cancel
-        if command_event.is_set() and pending_action.get("action") == "cancel":
-            pending_action.pop("action", None)
+        if action == "cancel":
             logger.info("Legionella treatment cancelled")
             break
 
@@ -270,8 +273,11 @@ async def _restore_setpoint(
 ) -> None:
     """Restore the original hot-water setpoint after treatment.
 
-    Skipped when the device is shutting down — recovery handles it on
-    next startup instead.
+    On normal completion the setpoint is restored and the store is cleared.
+    On graceful shutdown a best-effort restore is attempted with a short
+    timeout so the boiler isn't left at the elevated temperature.  If the
+    write fails the store remains active and crash recovery handles it on
+    next startup.
     """
     if not ctx.shutdown_requested:
         await ctx.publish_state(
@@ -284,15 +290,31 @@ async def _restore_setpoint(
         store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
         store.save()
         await ctx.publish_state({"status": "idle"})
+    else:
+        # Graceful shutdown — best-effort restore so the boiler doesn't
+        # remain at the elevated temperature between restarts.
+        try:
+            await asyncio.wait_for(
+                port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, original_setpoint),
+                timeout=5,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to restore setpoint during shutdown; "
+                "recovery will handle it on next startup",
+                exc_info=True,
+            )
+        else:
+            store.update({_STORE_KEY_ACTIVE: False, _STORE_KEY_ORIGINAL_SETPOINT: None})
+            store.save()
 
 
 async def _handle_start(
     ctx: DeviceContext,
     store: DeviceStore,
     port: OptolinkPort,
-    settings: object,
-    command_event: asyncio.Event,
-    pending_action: dict[str, str],
+    settings: Vito2MqttSettings,
+    command_queue: asyncio.Queue[str],
 ) -> None:
     """Execute a full start → heat → restore cycle.
 
@@ -310,7 +332,7 @@ async def _handle_start(
     feasible = is_within_heating_window(
         schedule,
         now.time(),
-        safety_margin_minutes=settings.legionella_safety_margin_minutes,  # type: ignore[attr-defined]
+        safety_margin_minutes=settings.legionella_safety_margin_minutes,
     )
     if not feasible:
         reason = (
@@ -333,10 +355,10 @@ async def _handle_start(
     store.save()
 
     # -- Set treatment temperature ------------------------------------------
-    target_temp = settings.legionella_temperature  # type: ignore[attr-defined]
+    target_temp = settings.legionella_temperature
     await port.write_signal(LEGIONELLA_SETPOINT_SIGNAL, target_temp)
 
-    remaining_minutes: int = settings.legionella_duration_minutes  # type: ignore[attr-defined]
+    remaining_minutes: int = settings.legionella_duration_minutes
     logger.info(
         "Legionella treatment started — target=%s, duration=%d min",
         target_temp,
@@ -355,8 +377,7 @@ async def _handle_start(
 
     await _heating_countdown(
         ctx,
-        command_event,
-        pending_action,
+        command_queue,
         target_temp,
         original_setpoint,
         remaining_minutes,

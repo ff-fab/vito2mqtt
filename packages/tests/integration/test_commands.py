@@ -320,6 +320,41 @@ class TestCommandErrors:
             f"published topics: {[t for t, *_ in mock_mqtt.published]}"
         )
 
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_non_dict_json_publishes_error(
+        self,
+        integration_app: App,
+        mock_mqtt: MockMqttClient,
+        test_settings: Vito2MqttSettings,
+        fake_adapter: FakeOptolinkAdapter,
+    ) -> None:
+        """A JSON payload that is not a dict causes an error message.
+
+        Arrange: fresh app.
+        Act: deliver ``"[1, 2, 3]"`` to ``vito2mqtt/hot_water/set``.
+        Assert: an error message is published and no writes occur.
+
+        This covers the edge case where the payload is valid JSON but
+        not the expected ``dict[str, Any]`` mapping — the handler must
+        reject it gracefully rather than raising ``AttributeError``.
+        """
+        await _run_with_commands(
+            integration_app,
+            mock_mqtt,
+            test_settings,
+            [("vito2mqtt/hot_water/set", "[1, 2, 3]")],
+        )
+
+        assert _has_error_message(mock_mqtt, "hot_water"), (
+            "Expected an error for non-dict JSON payload; "
+            f"published topics: {[t for t, *_ in mock_mqtt.published]}"
+        )
+        assert not fake_adapter.writes, (
+            "No writes should occur for a non-dict payload; "
+            f"writes: {fake_adapter.writes}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestCommandIsolation

@@ -50,6 +50,8 @@ from vito2mqtt.devices.legionella import register_legionella
 from vito2mqtt.devices.telemetry import register_telemetry
 from vito2mqtt.ports import OptolinkPort
 
+from .conftest import run_app_briefly
+
 # ---------------------------------------------------------------------------
 # Test adapter subclasses
 # ---------------------------------------------------------------------------
@@ -109,27 +111,6 @@ def _build_app(adapter: FakeOptolinkAdapter) -> App:
     return app
 
 
-async def _run_app_briefly(
-    app: App,
-    mock_mqtt: MockMqttClient,
-    test_settings: Vito2MqttSettings,
-    *,
-    wait: float = 0.4,
-) -> None:
-    """Start the app, wait *wait* seconds, then shut it down cleanly."""
-    shutdown_event = asyncio.Event()
-    task = asyncio.create_task(
-        app._run_async(
-            mqtt=mock_mqtt,
-            settings=test_settings,
-            shutdown_event=shutdown_event,
-        )
-    )
-    await asyncio.sleep(wait)
-    shutdown_event.set()
-    await task
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -184,7 +165,7 @@ class TestTelemetryErrorPublishing:
         Specification-based: follows the ADR-002 error topic contract.
         """
         # Act
-        await _run_app_briefly(raising_app, mock_mqtt, test_settings)
+        await run_app_briefly(raising_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert
         messages = mock_mqtt.get_messages_for("vito2mqtt/error")
@@ -210,7 +191,7 @@ class TestTelemetryErrorPublishing:
         Specification-based: per-group error topics are mandated by ADR-002.
         """
         # Act
-        await _run_app_briefly(raising_app, mock_mqtt, test_settings)
+        await run_app_briefly(raising_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert
         groups = [
@@ -256,7 +237,7 @@ class TestAppSurvival:
         State Transition: error state does not cause the app to exit early.
         """
         # Act
-        await _run_app_briefly(raising_app, mock_mqtt, test_settings)
+        await run_app_briefly(raising_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert — app published at least one status message (it ran)
         status_msgs = mock_mqtt.get_messages_for("vito2mqtt/status")
@@ -267,7 +248,7 @@ class TestAppSurvival:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    async def test_partial_failure_does_not_block_shutdown(
+    async def test_shutdown_completes_promptly_despite_adapter_errors(
         self,
         raising_app: App,
         mock_mqtt: MockMqttClient,
@@ -329,7 +310,7 @@ class TestErrorIsolation:
         Error Guessing + State Transition: single-group failure is isolated.
         """
         # Act
-        await _run_app_briefly(partial_app, mock_mqtt, test_settings)
+        await run_app_briefly(partial_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert — outdoor group published errors
         outdoor_errors = mock_mqtt.get_messages_for("vito2mqtt/outdoor/error")

@@ -34,7 +34,6 @@ Test Techniques Used
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -42,35 +41,7 @@ from cosalette import App, MockMqttClient
 
 from vito2mqtt.config import Vito2MqttSettings
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-async def _run_app_briefly(
-    app: App,
-    mock_mqtt: MockMqttClient,
-    test_settings: Vito2MqttSettings,
-    *,
-    wait: float = 0.3,
-) -> None:
-    """Start the app as a background task, wait, then shut it down cleanly.
-
-    Returns after the background task has completed so callers can
-    safely inspect ``mock_mqtt.published``.
-    """
-    shutdown_event = asyncio.Event()
-    task = asyncio.create_task(
-        app._run_async(
-            mqtt=mock_mqtt,
-            settings=test_settings,
-            shutdown_event=shutdown_event,
-        )
-    )
-    await asyncio.sleep(wait)
-    shutdown_event.set()
-    await task
-
+from .conftest import run_app_briefly
 
 # ---------------------------------------------------------------------------
 # TestAppStartup
@@ -96,7 +67,7 @@ class TestAppStartup:
         contains the word "online" (or "available" — cosalette variant).
         """
         # Act
-        await _run_app_briefly(integration_app, mock_mqtt, test_settings)
+        await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Assert
         messages = mock_mqtt.get_messages_for("vito2mqtt/status")
@@ -133,7 +104,7 @@ class TestTelemetryPublishing:
         Assert: a topic matching ``*outdoor*state*`` appears in published.
         """
         # Act
-        await _run_app_briefly(integration_app, mock_mqtt, test_settings)
+        await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Assert
         outdoor_state_msgs = [
@@ -165,7 +136,7 @@ class TestTelemetryPublishing:
         both appear.
         """
         # Act
-        await _run_app_briefly(integration_app, mock_mqtt, test_settings)
+        await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         published_topics = {topic for topic, *_ in mock_mqtt.published}
 
@@ -199,7 +170,7 @@ class TestTelemetryPublishing:
         Assert: the first outdoor/state payload parses as a JSON object (dict).
         """
         # Act
-        await _run_app_briefly(integration_app, mock_mqtt, test_settings)
+        await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Find first outdoor/state message
         outdoor_msgs = [
@@ -244,7 +215,7 @@ class TestAppShutdown:
         contains 'offline' or 'unavailable'.
         """
         # Act
-        await _run_app_briefly(integration_app, mock_mqtt, test_settings)
+        await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Assert
         messages = mock_mqtt.get_messages_for("vito2mqtt/status")

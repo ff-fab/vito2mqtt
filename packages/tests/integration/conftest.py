@@ -22,6 +22,8 @@ can drive the real application logic without real I/O.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from cosalette import App, MemoryStore, MockMqttClient
 
@@ -32,6 +34,40 @@ from vito2mqtt.devices.commands import register_commands
 from vito2mqtt.devices.legionella import register_legionella
 from vito2mqtt.devices.telemetry import register_telemetry
 from vito2mqtt.ports import OptolinkPort
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def run_app_briefly(
+    app: App,
+    mock_mqtt: MockMqttClient,
+    test_settings: Vito2MqttSettings,
+    *,
+    wait: float = 0.3,
+) -> None:
+    """Start the app as a background task, wait, then shut it down cleanly.
+
+    Returns after the background task has completed so callers can
+    safely inspect ``mock_mqtt.published``.
+    """
+    shutdown_event = asyncio.Event()
+    task = asyncio.create_task(
+        app._run_async(
+            mqtt=mock_mqtt,
+            settings=test_settings,
+            shutdown_event=shutdown_event,
+        )
+    )
+    await asyncio.sleep(wait)
+    shutdown_event.set()
+    await task
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

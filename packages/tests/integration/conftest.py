@@ -35,9 +35,38 @@ from vito2mqtt.devices.legionella import register_legionella
 from vito2mqtt.devices.telemetry import register_telemetry
 from vito2mqtt.ports import OptolinkPort
 
+TOPIC_PREFIX = "vito2mqtt"
+"""Default MQTT topic prefix used by integration tests.
+
+Matches the ``name`` passed to ``App(...)`` — the app uses this as the
+topic prefix when ``mqtt.topic_prefix`` is unset in settings.
+"""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def build_integration_app(adapter: FakeOptolinkAdapter) -> App:
+    """Construct a fully-wired App backed by *adapter*.
+
+    Mirrors the wiring in ``vito2mqtt.main`` but replaces:
+
+    - ``JsonFileStore`` → ``MemoryStore()`` (no filesystem access)
+    - concrete adapter factory → ``lambda: adapter`` (no serial I/O)
+    """
+    app = App(
+        name="vito2mqtt",
+        version=__version__,
+        description="Viessmann boiler to MQTT bridge",
+        settings_class=Vito2MqttSettings,
+        store=MemoryStore(),
+        adapters={OptolinkPort: lambda: adapter},
+    )
+    register_telemetry(app)
+    register_commands(app)
+    register_legionella(app)
+    return app
 
 
 async def run_app_briefly(
@@ -105,23 +134,7 @@ def test_settings() -> Vito2MqttSettings:
 def integration_app(fake_adapter: FakeOptolinkAdapter) -> App:
     """A fully-wired App instance using in-memory doubles.
 
-    Mirrors the wiring in ``vito2mqtt.main`` but replaces:
-
-    - ``JsonFileStore`` → ``MemoryStore()`` (no filesystem access)
-    - concrete adapter strings → ``lambda: fake_adapter`` (no serial I/O)
-
     Each test function gets a *fresh* App (fixture scope is ``"function"``)
     so tests are fully isolated.
     """
-    app = App(
-        name="vito2mqtt",
-        version=__version__,
-        description="Viessmann boiler to MQTT bridge",
-        settings_class=Vito2MqttSettings,
-        store=MemoryStore(),
-        adapters={OptolinkPort: lambda: fake_adapter},
-    )
-    register_telemetry(app)
-    register_commands(app)
-    register_legionella(app)
-    return app
+    return build_integration_app(fake_adapter)

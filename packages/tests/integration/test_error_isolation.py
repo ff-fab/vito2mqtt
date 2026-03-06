@@ -39,18 +39,13 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
-from cosalette import App, MemoryStore, MockMqttClient
+from cosalette import App, MockMqttClient
 
-from vito2mqtt._version import __version__
 from vito2mqtt.adapters.fake import FakeOptolinkAdapter
 from vito2mqtt.config import Vito2MqttSettings
 from vito2mqtt.devices import SIGNAL_GROUPS
-from vito2mqtt.devices.commands import register_commands
-from vito2mqtt.devices.legionella import register_legionella
-from vito2mqtt.devices.telemetry import register_telemetry
-from vito2mqtt.ports import OptolinkPort
 
-from .conftest import run_app_briefly
+from .conftest import TOPIC_PREFIX, build_integration_app, run_app_briefly
 
 # ---------------------------------------------------------------------------
 # Test adapter subclasses
@@ -91,27 +86,6 @@ class _PartiallyRaisingAdapter(FakeOptolinkAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _build_app(adapter: FakeOptolinkAdapter) -> App:
-    """Construct a fully-wired App backed by *adapter*."""
-    app = App(
-        name="vito2mqtt",
-        version=__version__,
-        description="Viessmann boiler to MQTT bridge",
-        settings_class=Vito2MqttSettings,
-        store=MemoryStore(),
-        adapters={OptolinkPort: lambda: adapter},
-    )
-    register_telemetry(app)
-    register_commands(app)
-    register_legionella(app)
-    return app
-
-
-# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -125,7 +99,7 @@ def raising_adapter() -> _RaisingAdapter:
 @pytest.fixture
 def raising_app(raising_adapter: _RaisingAdapter) -> App:
     """A fully-wired App whose adapter always raises on reads."""
-    return _build_app(raising_adapter)
+    return build_integration_app(raising_adapter)
 
 
 @pytest.fixture
@@ -137,7 +111,7 @@ def partial_adapter() -> _PartiallyRaisingAdapter:
 @pytest.fixture
 def partial_app(partial_adapter: _PartiallyRaisingAdapter) -> App:
     """A fully-wired App whose adapter raises only for the outdoor group."""
-    return _build_app(partial_adapter)
+    return build_integration_app(partial_adapter)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +142,7 @@ class TestTelemetryErrorPublishing:
         await run_app_briefly(raising_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert
-        messages = mock_mqtt.get_messages_for("vito2mqtt/error")
+        messages = mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/error")
         assert messages, (
             "Expected at least one message on vito2mqtt/error after adapter failure; "
             f"published topics: {sorted({t for t, *_ in mock_mqtt.published})}"
@@ -203,7 +177,7 @@ class TestTelemetryErrorPublishing:
             "system",
         ]
         per_group_msgs = any(
-            mock_mqtt.get_messages_for(f"vito2mqtt/{g}/error") for g in groups
+            mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/{g}/error") for g in groups
         )
         assert per_group_msgs, (
             "Expected at least one per-group error topic to have messages; "
@@ -240,7 +214,7 @@ class TestAppSurvival:
         await run_app_briefly(raising_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert — app published at least one status message (it ran)
-        status_msgs = mock_mqtt.get_messages_for("vito2mqtt/status")
+        status_msgs = mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/status")
         assert status_msgs, (
             "Expected at least one vito2mqtt/status message; "
             f"published topics: {sorted({t for t, *_ in mock_mqtt.published})}"
@@ -313,7 +287,7 @@ class TestErrorIsolation:
         await run_app_briefly(partial_app, mock_mqtt, test_settings, wait=0.4)
 
         # Assert — outdoor group published errors
-        outdoor_errors = mock_mqtt.get_messages_for("vito2mqtt/outdoor/error")
+        outdoor_errors = mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/outdoor/error")
         assert outdoor_errors, (
             "Expected vito2mqtt/outdoor/error to have messages "
             "after outdoor adapter failure; "

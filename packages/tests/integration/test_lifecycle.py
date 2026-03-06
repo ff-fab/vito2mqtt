@@ -41,7 +41,7 @@ from cosalette import App, MockMqttClient
 
 from vito2mqtt.config import Vito2MqttSettings
 
-from .conftest import run_app_briefly
+from .conftest import TOPIC_PREFIX, run_app_briefly
 
 # ---------------------------------------------------------------------------
 # TestAppStartup
@@ -70,8 +70,8 @@ class TestAppStartup:
         await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Assert
-        messages = mock_mqtt.get_messages_for("vito2mqtt/status")
-        assert messages, "Expected at least one message on vito2mqtt/status"
+        messages = mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/status")
+        assert messages, f"Expected at least one message on {TOPIC_PREFIX}/status"
         payloads = [payload for payload, _retain, _qos in messages]
         assert any("online" in p or "available" in p for p in payloads), (
             f"No 'online'/'available' payload found; got: {payloads}"
@@ -218,8 +218,8 @@ class TestAppShutdown:
         await run_app_briefly(integration_app, mock_mqtt, test_settings)
 
         # Assert
-        messages = mock_mqtt.get_messages_for("vito2mqtt/status")
-        assert messages, "Expected at least one message on vito2mqtt/status"
+        messages = mock_mqtt.get_messages_for(f"{TOPIC_PREFIX}/status")
+        assert messages, f"Expected at least one message on {TOPIC_PREFIX}/status"
         payloads = [payload for payload, _retain, _qos in messages]
         assert any("offline" in p or "unavailable" in p for p in payloads), (
             f"No 'offline'/'unavailable' payload found; got: {payloads}"

@@ -41,6 +41,8 @@ from cosalette import App, MockMqttClient
 from vito2mqtt.adapters.fake import FakeOptolinkAdapter
 from vito2mqtt.config import Vito2MqttSettings
 
+from .conftest import TOPIC_PREFIX
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -89,8 +91,8 @@ async def _run_with_commands(
 def _has_error_message(mock_mqtt: MockMqttClient, group: str = "hot_water") -> bool:
     """Return True if an error was published on the global or per-group topic."""
     error_topics = [
-        "vito2mqtt/error",
-        f"vito2mqtt/{group}/error",
+        f"{TOPIC_PREFIX}/error",
+        f"{TOPIC_PREFIX}/{group}/error",
     ]
     published_topics = {topic for topic, *_ in mock_mqtt.published}
     return any(t in published_topics for t in error_topics)
@@ -130,7 +132,7 @@ class TestCommandDispatch:
             integration_app,
             mock_mqtt,
             test_settings,
-            [("vito2mqtt/hot_water/set", '{"hot_water_setpoint": 60}')],
+            [(f"{TOPIC_PREFIX}/hot_water/set", '{"hot_water_setpoint": 60}')],
         )
 
         assert "hot_water_setpoint" in fake_adapter.writes, (
@@ -162,7 +164,7 @@ class TestCommandDispatch:
             integration_app,
             mock_mqtt,
             test_settings,
-            [("vito2mqtt/hot_water/set", '{"hot_water_setpoint": 42}')],
+            [(f"{TOPIC_PREFIX}/hot_water/set", '{"hot_water_setpoint": 42}')],
         )
 
         assert "hot_water_setpoint" not in fake_adapter.writes, (
@@ -195,7 +197,7 @@ class TestCommandDispatch:
             test_settings,
             [
                 (
-                    "vito2mqtt/hot_water/set",
+                    f"{TOPIC_PREFIX}/hot_water/set",
                     '{"hot_water_setpoint": 42, "__force": true}',
                 )
             ],
@@ -235,7 +237,7 @@ class TestCommandDispatch:
             test_settings,
             [
                 (
-                    "vito2mqtt/heating_radiator/set",
+                    f"{TOPIC_PREFIX}/heating_radiator/set",
                     '{"heating_curve_gradient_m1": 1.4}',
                 )
             ],
@@ -281,7 +283,7 @@ class TestCommandErrors:
             integration_app,
             mock_mqtt,
             test_settings,
-            [("vito2mqtt/hot_water/set", "not-valid-json{{")],
+            [(f"{TOPIC_PREFIX}/hot_water/set", "not-valid-json{{")],
         )
 
         assert _has_error_message(mock_mqtt, "hot_water"), (
@@ -312,7 +314,7 @@ class TestCommandErrors:
             integration_app,
             mock_mqtt,
             test_settings,
-            [("vito2mqtt/hot_water/set", '{"nonexistent_signal": 99}')],
+            [(f"{TOPIC_PREFIX}/hot_water/set", '{"nonexistent_signal": 99}')],
         )
 
         assert _has_error_message(mock_mqtt, "hot_water"), (
@@ -343,7 +345,7 @@ class TestCommandErrors:
             integration_app,
             mock_mqtt,
             test_settings,
-            [("vito2mqtt/hot_water/set", "[1, 2, 3]")],
+            [(f"{TOPIC_PREFIX}/hot_water/set", "[1, 2, 3]")],
         )
 
         assert _has_error_message(mock_mqtt, "hot_water"), (
@@ -394,9 +396,9 @@ class TestCommandIsolation:
             test_settings,
             [
                 # Bad command first — must not crash the app
-                ("vito2mqtt/hot_water/set", "not-valid-json{{"),
+                (f"{TOPIC_PREFIX}/hot_water/set", "not-valid-json{{"),
                 # Valid command second — must still be processed
-                ("vito2mqtt/hot_water/set", '{"hot_water_setpoint": 55}'),
+                (f"{TOPIC_PREFIX}/hot_water/set", '{"hot_water_setpoint": 55}'),
             ],
         )
 
